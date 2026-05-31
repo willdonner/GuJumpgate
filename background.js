@@ -12847,6 +12847,11 @@ async function finalizeDeferredStepExecutionError(step, error) {
 async function executeNodeViaCompletionSignal(nodeId, timeoutMs = 0) {
   const normalizedNodeId = String(nodeId || '').trim();
   const executionState = await getState();
+  if (shouldAutoSkipNodeWhenPlusDisabled(normalizedNodeId, executionState)) {
+    await setNodeStatus(normalizedNodeId, 'skipped');
+    await addLog(`Plus 模式已关闭，自动跳过节点 ${normalizedNodeId}。`, 'warn', { nodeId: normalizedNodeId });
+    return { skipped: true, nodeId: normalizedNodeId };
+  }
   const resolvedTimeoutMs = Number(timeoutMs) > 0
     ? timeoutMs
     : getNodeCompletionSignalTimeoutMs(normalizedNodeId, executionState);
@@ -13299,6 +13304,19 @@ const STEP_FETCH_NETWORK_RETRY_POLICIES = new Map([
   [9, { maxAttempts: 3, cooldownMs: 12000 }],
 ]);
 
+const PLUS_DISABLED_AUTO_SKIP_NODE_IDS = Object.freeze([
+  'plus-checkout-create',
+  'plus-checkout-billing',
+  'paypal-approve',
+  'plus-checkout-return',
+  'gopay-subscription-confirm',
+]);
+
+function shouldAutoSkipNodeWhenPlusDisabled(nodeId = '', state = {}) {
+  return !isPlusModeState(state)
+    && PLUS_DISABLED_AUTO_SKIP_NODE_IDS.includes(String(nodeId || '').trim());
+}
+
 async function executeNode(nodeId, options = {}) {
   const { deferRetryableTransportError = false } = options;
   const normalizedNodeId = String(nodeId || '').trim();
@@ -13307,6 +13325,11 @@ async function executeNode(nodeId, options = {}) {
   }
   console.log(LOG_PREFIX, `Executing node ${normalizedNodeId}`);
   let state = await getState();
+  if (shouldAutoSkipNodeWhenPlusDisabled(normalizedNodeId, state)) {
+    await setNodeStatus(normalizedNodeId, 'skipped');
+    await addLog(`Plus 模式已关闭，自动跳过节点 ${normalizedNodeId}。`, 'warn', { nodeId: normalizedNodeId });
+    return;
+  }
   const step = getStepIdByNodeIdForState(normalizedNodeId, state);
   const authChainClaim = await acquireTopLevelAuthChainExecutionForNode(normalizedNodeId, state);
   if (authChainClaim.joined) {

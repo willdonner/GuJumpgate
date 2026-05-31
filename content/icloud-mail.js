@@ -81,6 +81,29 @@ if (shouldHandlePollEmailInCurrentFrame) {
       && (Boolean(node.offsetParent) || getComputedStyle(node).position === 'fixed');
   }
 
+  function getNodeSearchText(node) {
+    return normalizeText([
+      node?.innerText || node?.textContent || '',
+      node?.getAttribute?.('aria-label') || '',
+      node?.getAttribute?.('title') || '',
+    ].join(' '));
+  }
+
+  async function waitForMailUiReady(timeout = 10000) {
+    const start = Date.now();
+    while (Date.now() - start < timeout) {
+      throwIfStopped();
+      const readyElement = document.querySelector(
+        '.content-container, .mailbox-list-item[aria-label], [role="option"][aria-label], [aria-label="Junk"], [aria-label="Inbox"]'
+      );
+      if (readyElement && isVisibleElement(readyElement)) {
+        return readyElement;
+      }
+      await sleep(100);
+    }
+    throw new Error('等待 iCloud 邮箱界面加载超时。');
+  }
+
   function collectThreadItems() {
     return Array.from(document.querySelectorAll('.content-container')).filter((item) => {
       if (!isVisibleElement(item)) return false;
@@ -236,6 +259,193 @@ if (shouldHandlePollEmailInCurrentFrame) {
     };
   }
 
+  function findMailboxElement(patterns) {
+    const exactCandidates = Array.from(document.querySelectorAll([
+      'li.mailbox-list-item[role="option"][aria-label]',
+      '[role="option"][aria-label]',
+      '[role="treeitem"][aria-label]',
+    ].join(', ')));
+    for (const node of exactCandidates) {
+      if (!isVisibleElement(node)) continue;
+      const label = normalizeText(node.getAttribute('aria-label') || node.textContent || '');
+      if (patterns.some((pattern) => pattern.test(label))) {
+        return node;
+      }
+    }
+    return null;
+  }
+
+  async function openMailboxByPatterns(patterns, label) {
+    const node = findMailboxElement(patterns);
+    if (!node) {
+      return false;
+    }
+    log(`iCloud 邮箱：切换到 ${label}`, 'info');
+    simulateClick(node);
+    await sleep(1200);
+    return true;
+  }
+
+  async function openJunkMailbox() {
+    return openMailboxByPatterns([/^junk$/i, /^spam$/i, /^垃圾邮件$/, /^垃圾郵件$/], 'Junk/垃圾邮件');
+  }
+
+  async function openInboxMailbox() {
+    return openMailboxByPatterns([/^inbox$/i, /^收件箱$/], '收件箱');
+  }
+
+  function findMoreActionsButton(root = document) {
+    const buttons = Array.from(root.querySelectorAll('button[aria-haspopup="menu"], button[aria-label], button[title]'))
+      .filter((button) => {
+        if (!isVisibleElement(button)) return false;
+        const text = getNodeSearchText(button);
+        return /more\s+actions|more|更多操作|更多/i.test(text) || button.getAttribute('aria-haspopup') === 'menu';
+      });
+
+    return buttons.find((button) => !button.closest('.content-container, .thread-list-item'))
+      || buttons.find((button) => /more\s+actions|more|更多操作|更多/i.test(getNodeSearchText(button)))
+      || buttons[0]
+      || null;
+  }
+
+  function findItemMoreActionsButton(item) {
+    return Array.from(item.querySelectorAll('button[aria-haspopup="menu"], button[aria-label], button[title]'))
+      .find((button) => {
+        const text = getNodeSearchText(button);
+        return /more\s+actions|更多操作/i.test(text);
+      }) || null;
+  }
+
+  async function waitForMoreActionsButton(timeout = 3000) {
+    const start = Date.now();
+    while (Date.now() - start < timeout) {
+      throwIfStopped();
+      const button = findMoreActionsButton(document);
+      if (button) {
+        return button;
+      }
+      await sleep(100);
+    }
+    return null;
+  }
+
+  function getMoveToInboxPatterns() {
+    return [
+      /移到收件箱/,
+      /移至收件箱/,
+      /移入收件箱/,
+      /move\s+to\s+inbox/i,
+    ];
+  }
+
+  async function waitForMenuItem(patterns, timeout = 2500) {
+    const start = Date.now();
+    while (Date.now() - start < timeout) {
+      throwIfStopped();
+      const candidates = Array.from(document.querySelectorAll([
+        '[role="menuitem"]',
+        '[role="option"]',
+        'button',
+        'li',
+        'div[aria-label]',
+        'div',
+        'span',
+      ].join(', ')));
+      const match = candidates.find((node) => {
+        if (!isVisibleElement(node)) return false;
+        const text = getNodeSearchText(node);
+        return text.length <= 80 && patterns.some((pattern) => pattern.test(text));
+      });
+      if (match) {
+        return match;
+      }
+      await sleep(100);
+    }
+    return null;
+  }
+
+  function getMenuItemClickTarget(node) {
+    return node?.closest?.('[role="menuitem"], [role="option"], button, li')
+      || node?.closest?.('div')
+      || node;
+  }
+
+  async function moveJunkItemToInbox(item) {
+    const threadDetails = item.querySelector('.thread-details') || item;
+    log(`iCloud 邮箱：点击 Junk 邮件条目 "${getThreadItemMetadata(item).combinedText.slice(0, 80)}"`, 'info');
+    simulateClick(item);
+    await sleep(300);
+    simulateClick(threadDetails);
+    await sleep(500);
+
+    let moveToInbox = await waitForMenuItem(getMoveToInboxPatterns(), 300);
+    if (moveToInbox) {
+      simulateClick(getMenuItemClickTarget(moveToInbox));
+      await sleep(1600);
+      return true;
+    }
+
+    const moreActions = findItemMoreActionsButton(item) || await waitForMoreActionsButton();
+    if (!moreActions) {
+      log('iCloud 邮箱：未找到邮件更多操作按钮，无法移动 Junk 邮件。', 'warn');
+      return false;
+    }
+
+    simulateClick(moreActions);
+    moveToInbox = await waitForMenuItem(getMoveToInboxPatterns());
+    if (!moveToInbox) {
+      log('iCloud 邮箱：未找到“移到收件箱”菜单项。', 'warn');
+      return false;
+    }
+
+    simulateClick(getMenuItemClickTarget(moveToInbox));
+    await sleep(1600);
+    return true;
+  }
+
+  function isLikelyChatGptVerificationMail(meta) {
+    const combined = normalizeText([
+      meta?.sender || '',
+      meta?.subject || '',
+      meta?.preview || '',
+    ].join(' ')).toLowerCase();
+    return /chatgpt|openai/.test(combined)
+      && /(verification|verify|temporary|code|验证码|验证|代码)/.test(combined);
+  }
+
+  async function moveMatchingJunkMailToInbox(normalizedSenderFilters, normalizedSubjectFilters, step) {
+    const openedJunk = await openJunkMailbox();
+    if (!openedJunk) {
+      log(`步骤 ${step}：未找到 iCloud Junk/垃圾邮件入口，跳过 Junk 搬运。`, 'warn');
+      return 0;
+    }
+
+    await sleep(1200);
+    const items = collectThreadItems();
+    for (const item of items.slice(0, 5)) {
+      const meta = getThreadItemMetadata(item);
+      const lowerSender = meta.sender.toLowerCase();
+      const lowerSubject = normalizeText([meta.subject, meta.preview].join(' ')).toLowerCase();
+      const senderMatch = normalizedSenderFilters.some((filter) => lowerSender.includes(filter));
+      const subjectMatch = normalizedSubjectFilters.some((filter) => lowerSubject.includes(filter));
+      const chatGptVerificationMatch = isLikelyChatGptVerificationMail(meta);
+      if (!senderMatch && !subjectMatch && !chatGptVerificationMatch) {
+        log(`iCloud 邮箱：跳过 Junk 邮件 "${meta.combinedText.slice(0, 80)}"，未匹配过滤条件。`, 'info');
+        continue;
+      }
+      if (await moveJunkItemToInbox(item)) {
+        log(`步骤 ${step}：已将 Junk 匹配邮件移到收件箱。`, 'ok');
+        await openInboxMailbox();
+        await sleep(1200);
+        return 1;
+      }
+    }
+
+    await openInboxMailbox();
+    await sleep(1200);
+    return 0;
+  }
+
   async function refreshInbox() {
     const refreshPatterns = [/刷新/i, /refresh/i, /重新载入/i];
     const candidates = document.querySelectorAll('button, [role="button"], a');
@@ -327,8 +537,10 @@ if (shouldHandlePollEmailInCurrentFrame) {
     const normalizedSubjectFilters = subjectFilters.map((filter) => String(filter || '').toLowerCase()).filter(Boolean);
 
     log(`步骤 ${step}：开始轮询 iCloud 邮箱（最多 ${maxAttempts} 次）`);
-    await waitForElement('.content-container', 10000);
+    await waitForMailUiReady(10000);
     await sleep(1500);
+    await openInboxMailbox();
+    await sleep(800);
     const currentItems = collectThreadItems();
     const sessionBaseline = getOrCreatePollSessionBaseline(pollSessionKey, currentItems);
     const existingSignatures = sessionBaseline.signatures;
@@ -338,6 +550,8 @@ if (shouldHandlePollEmailInCurrentFrame) {
     } else {
       log(`步骤 ${step}：已记录当前 ${existingSignatures.size} 封旧邮件快照`);
     }
+
+    await moveMatchingJunkMailToInbox(normalizedSenderFilters, normalizedSubjectFilters, step);
 
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       log(`步骤 ${step}：正在轮询 iCloud 邮箱，第 ${attempt}/${maxAttempts} 次`);

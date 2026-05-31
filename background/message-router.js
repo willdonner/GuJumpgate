@@ -914,6 +914,18 @@
       return 'paypal';
     }
 
+    const PLUS_CHECKOUT_AUTO_SKIP_NODE_IDS = Object.freeze([
+      'plus-checkout-create',
+      'plus-checkout-billing',
+      'paypal-approve',
+      'plus-checkout-return',
+      'gopay-subscription-confirm',
+    ]);
+
+    function isDoneNodeStatus(status = '') {
+      return ['completed', 'manual_completed', 'skipped'].includes(String(status || '').trim());
+    }
+
     function getPlusPaymentMethodLabel(value = '') {
       const method = normalizePlusPaymentMethodForDisplay(value);
       if (method === 'gpc-helper') {
@@ -1965,13 +1977,48 @@
               ? nextHostPreference
               : '';
           }
+          let autoSkippedPlusCheckoutNodes = [];
           if (stepModeChanged && typeof getStepIdsForState === 'function') {
             const nextStateForSteps = { ...currentState, ...stateUpdates };
             const nextNodeIds = typeof getNodeIdsForState === 'function'
               ? getNodeIdsForState(nextStateForSteps)
               : getStepIdsForState(nextStateForSteps).map((stepId) => getStepKeyForState(stepId, nextStateForSteps)).filter(Boolean);
-            stateUpdates.nodeStatuses = Object.fromEntries(nextNodeIds.map((nodeId) => [nodeId, 'pending']));
+            const nextNodeStatuses = Object.fromEntries(nextNodeIds.map((nodeId) => {
+              const currentStatus = String(currentState?.nodeStatuses?.[nodeId] || '').trim();
+              return [nodeId, isDoneNodeStatus(currentStatus) ? currentStatus : 'pending'];
+            }));
+            if (modeChanged && !nextPlusModeEnabled) {
+              const nextNodeIdSet = new Set(nextNodeIds);
+              autoSkippedPlusCheckoutNodes = PLUS_CHECKOUT_AUTO_SKIP_NODE_IDS.filter((nodeId) => nextNodeIdSet.has(nodeId));
+              autoSkippedPlusCheckoutNodes.forEach((nodeId) => {
+                nextNodeStatuses[nodeId] = 'skipped';
+              });
+            }
+            stateUpdates.nodeStatuses = nextNodeStatuses;
             stateUpdates.currentNodeId = '';
+          }
+          if (!nextPlusModeEnabled && typeof getNodeIdsForState === 'function') {
+            const nextStateForSteps = { ...currentState, ...stateUpdates };
+            const nextNodeIds = getNodeIdsForState(nextStateForSteps);
+            const nextNodeIdSet = new Set(nextNodeIds);
+            const nodeStatuses = {
+              ...(currentState?.nodeStatuses || {}),
+              ...(stateUpdates.nodeStatuses || {}),
+            };
+            const nodesToSkip = PLUS_CHECKOUT_AUTO_SKIP_NODE_IDS.filter((nodeId) => nextNodeIdSet.has(nodeId));
+            nodesToSkip.forEach((nodeId) => {
+              nodeStatuses[nodeId] = 'skipped';
+            });
+            if (nodesToSkip.length) {
+              autoSkippedPlusCheckoutNodes = Array.from(new Set([
+                ...autoSkippedPlusCheckoutNodes,
+                ...nodesToSkip,
+              ]));
+              stateUpdates.nodeStatuses = nodeStatuses;
+              if (nodesToSkip.includes(String(currentState?.currentNodeId || '').trim())) {
+                stateUpdates.currentNodeId = '';
+              }
+            }
           }
           await setState(stateUpdates);
           const mergedState = await getState();

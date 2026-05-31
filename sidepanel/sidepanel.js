@@ -654,7 +654,6 @@ const PLUS_CHECKOUT_PROFILE_SETTING_KEYS = Object.freeze([
   'hostedCheckoutSmsPoolText',
   'hostedCheckoutSmsPoolUsage',
 ]);
-const FIXED_PLUS_MODE_ENABLED = true;
 const GUIDE_REPOSITORY_URL = 'https://github.com/FoundZiGu/GuJumpgate';
 const SIGNUP_METHOD_EMAIL = 'email';
 const SIGNUP_METHOD_PHONE = 'phone';
@@ -4990,9 +4989,6 @@ function collectSettingsPayload() {
   const cloudflareTempEmailReceiveMailboxNormalizer = typeof normalizeCloudflareTempEmailReceiveMailboxValue === 'function'
     ? normalizeCloudflareTempEmailReceiveMailboxValue
     : ((value) => String(value || '').trim());
-  const fixedPlusModeEnabled = typeof FIXED_PLUS_MODE_ENABLED === 'boolean'
-    ? FIXED_PLUS_MODE_ENABLED
-    : true;
   const selectedPlusCheckoutMode = getActivePlusCheckoutModeFromState(latestState);
   const currentPlusCheckoutProfiles = getLocalPlusCheckoutProfilesDraft(latestState);
   const nextPlusCheckoutProfiles = {
@@ -5051,7 +5047,7 @@ function collectSettingsPayload() {
     ipProxyRegion: currentIpProxyServiceProfile.region,
     codex2apiUrl: inputCodex2ApiUrl.value.trim(),
     codex2apiAdminKey: inputCodex2ApiAdminKey.value.trim(),
-    plusModeEnabled: fixedPlusModeEnabled,
+    plusModeEnabled: effectivePlusModeEnabled,
     plusPaymentMethod,
     plusCheckoutMode: selectedPlusCheckoutMode,
     plusCheckoutProfiles: nextPlusCheckoutProfiles,
@@ -5474,6 +5470,17 @@ function normalizePhoneSmsCountryLabel(value = '', provider = getSelectedPhoneSm
     return normalizeFiveSimCountryLabel(value);
   }
   return normalizeHeroSmsCountryLabel(value);
+}
+
+function isSmsPoolUnitedStatesCountryId(id) {
+  return normalizeHeroSmsCountryId(id, 0) === normalizeHeroSmsCountryId(DEFAULT_SMSPOOL_COUNTRY_ID, 1);
+}
+
+function normalizeSmsPoolCountryLabel(id, value = '') {
+  if (isSmsPoolUnitedStatesCountryId(id)) {
+    return '美国 (United States)';
+  }
+  return String(value || '').trim() || `Country #${normalizeHeroSmsCountryId(id, 0)}`;
 }
 
 function normalizePhoneSmsMaxPriceValue(value = '', provider = getSelectedPhoneSmsProvider()) {
@@ -6916,7 +6923,7 @@ function getSelectedHeroSmsCountryOption() {
   return isFiveSimProviderSelected()
     ? { id: DEFAULT_FIVE_SIM_COUNTRY_ID, label: DEFAULT_FIVE_SIM_COUNTRY_LABEL }
     : (getSelectedPhoneSmsProvider() === PHONE_SMS_PROVIDER_SMSPOOL
-      ? { id: DEFAULT_SMSPOOL_COUNTRY_ID, label: DEFAULT_SMSPOOL_COUNTRY_LABEL }
+      ? { id: DEFAULT_SMSPOOL_COUNTRY_ID, label: normalizeSmsPoolCountryLabel(DEFAULT_SMSPOOL_COUNTRY_ID) }
       : { id: DEFAULT_HERO_SMS_COUNTRY_ID, label: DEFAULT_HERO_SMS_COUNTRY_LABEL });
 }
 
@@ -6997,7 +7004,13 @@ function updateHeroSmsPlatformDisplay() {
 function getHeroSmsCountryLabelById(id) {
   const targetId = String(id || '').trim();
   const countrySelect = selectHeroSmsCountry || selectHeroSmsCountryFallback;
-  if (!targetId || !countrySelect) {
+  if (!targetId) {
+    return '';
+  }
+  if (getSelectedPhoneSmsProvider() === PHONE_SMS_PROVIDER_SMSPOOL && isSmsPoolUnitedStatesCountryId(targetId)) {
+    return normalizeSmsPoolCountryLabel(targetId);
+  }
+  if (!countrySelect) {
     return '';
   }
   const matched = Array.from(countrySelect.options).find((option) => option.value === targetId);
@@ -7200,7 +7213,7 @@ function syncHeroSmsFallbackSelectionOrderFromSelect(options = {}) {
       ? { id: DEFAULT_FIVE_SIM_COUNTRY_ID, label: DEFAULT_FIVE_SIM_COUNTRY_LABEL }
       : (
         getSelectedPhoneSmsProvider() === PHONE_SMS_PROVIDER_SMSPOOL
-          ? { id: normalizeHeroSmsCountryId(DEFAULT_SMSPOOL_COUNTRY_ID), label: DEFAULT_SMSPOOL_COUNTRY_LABEL }
+          ? { id: normalizeHeroSmsCountryId(DEFAULT_SMSPOOL_COUNTRY_ID), label: normalizeSmsPoolCountryLabel(DEFAULT_SMSPOOL_COUNTRY_ID) }
           : { id: normalizeHeroSmsCountryId(DEFAULT_HERO_SMS_COUNTRY_ID), label: DEFAULT_HERO_SMS_COUNTRY_LABEL }
       );
     heroSmsCountrySelectionOrder = [defaultCountry.id];
@@ -7436,12 +7449,22 @@ function buildPhoneSmsCountrySelectionFromState(state = {}, provider = getSelect
     ];
   }
   if (normalizedProvider === PHONE_SMS_PROVIDER_SMSPOOL) {
+    const primaryId = normalizeHeroSmsCountryId(
+      state?.smsPoolCountryId || DEFAULT_SMSPOOL_COUNTRY_ID,
+      DEFAULT_SMSPOOL_COUNTRY_ID
+    );
     return [
       {
-        id: normalizeHeroSmsCountryId(state?.smsPoolCountryId || state?.heroSmsCountryId),
-        label: normalizeHeroSmsCountryLabel(state?.smsPoolCountryLabel || state?.heroSmsCountryLabel),
+        id: primaryId,
+        label: normalizeSmsPoolCountryLabel(
+          primaryId,
+          state?.smsPoolCountryLabel || DEFAULT_SMSPOOL_COUNTRY_LABEL
+        ),
       },
-      ...normalizeHeroSmsCountryFallbackList(state?.smsPoolCountryFallback || []),
+      ...normalizeHeroSmsCountryFallbackList(state?.smsPoolCountryFallback || []).map((country) => ({
+        ...country,
+        label: normalizeSmsPoolCountryLabel(country.id, country.label),
+      })),
     ];
   }
   return [
@@ -7790,6 +7813,34 @@ async function loadHeroSmsCountries() {
       selectEl.appendChild(option);
     });
   };
+  const ensureSmsPoolUnitedStatesOption = (optionItems = []) => {
+    const normalizedItems = Array.isArray(optionItems) ? optionItems.filter(Boolean) : [];
+    const usId = normalizeHeroSmsCountryId(DEFAULT_SMSPOOL_COUNTRY_ID, 1);
+    const usLabel = '美国 (United States)';
+    const merged = normalizedItems.map((entry) => (
+      normalizeHeroSmsCountryId(entry?.id, 0) === usId
+        ? {
+          ...entry,
+          id: usId,
+          label: usLabel,
+          searchText: [entry.searchText, usLabel, DEFAULT_SMSPOOL_COUNTRY_LABEL, 'United States', 'USA', 'US', '+1', '美国', String(usId)]
+            .filter(Boolean)
+            .join(' '),
+        }
+        : entry
+    ));
+    if (!merged.some((entry) => normalizeHeroSmsCountryId(entry?.id, 0) === usId)) {
+      merged.unshift({
+        id: usId,
+        label: usLabel,
+        searchText: `${usLabel} ${DEFAULT_SMSPOOL_COUNTRY_LABEL} USA US +1 ${usId}`,
+      });
+    }
+    return [
+      ...merged.filter((entry) => normalizeHeroSmsCountryId(entry?.id, 0) === usId),
+      ...merged.filter((entry) => normalizeHeroSmsCountryId(entry?.id, 0) !== usId),
+    ];
+  };
 
   if (provider === PHONE_SMS_PROVIDER_FIVE_SIM) {
     try {
@@ -8005,7 +8056,7 @@ async function loadHeroSmsCountries() {
       if (!countries.length) {
         throw new Error('国家列表为空');
       }
-      const optionItems = countries
+      const optionItems = ensureSmsPoolUnitedStatesOption(countries
         .map((item) => {
           const id = normalizeHeroSmsCountryId(item?.ID ?? item?.id, 0);
           const name = String(item?.name || '').trim();
@@ -8024,7 +8075,7 @@ async function loadHeroSmsCountries() {
           };
         })
         .filter(Boolean)
-        .sort((left, right) => String(left.label || '').localeCompare(String(right.label || '')));
+        .sort((left, right) => String(left.label || '').localeCompare(String(right.label || ''))));
       if (!optionItems.length) {
         throw new Error('国家列表为空');
       }
@@ -8034,13 +8085,13 @@ async function loadHeroSmsCountries() {
       applyOptions(optionItems, selectHeroSmsCountryFallback);
     } catch (error) {
       console.warn('加载 SMSPool 国家列表失败：', error);
-      const fallbackItems = [
+      const fallbackItems = ensureSmsPoolUnitedStatesOption([
         {
           id: normalizeHeroSmsCountryId(latestState?.smsPoolCountryId || DEFAULT_SMSPOOL_COUNTRY_ID),
           label: normalizeHeroSmsCountryLabel(latestState?.smsPoolCountryLabel || DEFAULT_SMSPOOL_COUNTRY_LABEL, DEFAULT_SMSPOOL_COUNTRY_LABEL),
           searchText: `${normalizeHeroSmsCountryLabel(latestState?.smsPoolCountryLabel || DEFAULT_SMSPOOL_COUNTRY_LABEL, DEFAULT_SMSPOOL_COUNTRY_LABEL)} ${normalizeHeroSmsCountryId(latestState?.smsPoolCountryId || DEFAULT_SMSPOOL_COUNTRY_ID)} US +1`,
         },
-      ];
+      ]);
       applyOptions(fallbackItems, selectHeroSmsCountry);
       applyOptions(fallbackItems, selectHeroSmsCountryFallback);
       heroSmsCountrySearchTextById.clear();
@@ -8189,10 +8240,16 @@ async function loadHeroSmsCountries() {
     });
   }
   const availableIds = new Set(Array.from(countrySelect.options).map((option) => String(option.value)));
-  const normalizedSelectedIds = previousSelectedIds
+  let normalizedSelectedIds = previousSelectedIds
     .map((id) => String(id))
     .filter((id) => availableIds.has(id))
     .map((id) => normalizePhoneSmsCountryId(id, provider));
+  if (provider === PHONE_SMS_PROVIDER_SMSPOOL) {
+    const usId = normalizePhoneSmsCountryId(DEFAULT_SMSPOOL_COUNTRY_ID, provider);
+    if (availableIds.has(String(usId)) && !normalizedSelectedIds.some((id) => String(id) === String(usId))) {
+      normalizedSelectedIds = [usId, ...normalizedSelectedIds].slice(0, HERO_SMS_COUNTRY_SELECTION_MAX);
+    }
+  }
   heroSmsCountrySelectionOrder = normalizedSelectedIds;
   const selectedSet = new Set(normalizedSelectedIds.map((id) => String(id)));
   Array.from(countrySelect.options).forEach((option) => {
@@ -10812,6 +10869,12 @@ function updatePlusModeUI() {
   if (typeof rowPlusMode !== 'undefined' && rowPlusMode) {
     rowPlusMode.style.display = supportsPlusMode ? '' : 'none';
   }
+  if (typeof inputPlusModeEnabled !== 'undefined' && inputPlusModeEnabled) {
+    inputPlusModeEnabled.disabled = !supportsPlusMode;
+    inputPlusModeEnabled.title = supportsPlusMode
+      ? '开启后使用 Plus Checkout 支付授权流程；关闭后恢复普通注册授权流程'
+      : '当前 flow 不支持 Plus 模式';
+  }
   const checkoutModeSwitchVisible = supportsPlusMode && enabled && selectedMethod === paypalValue;
   if (plusCheckoutModeSwitchGroup) {
     plusCheckoutModeSwitchGroup.style.display = supportsPlusMode ? '' : 'none';
@@ -11878,7 +11941,7 @@ function applySettingsState(state) {
   }
   syncPasswordField(state || {});
   if (typeof inputPlusModeEnabled !== 'undefined' && inputPlusModeEnabled) {
-    inputPlusModeEnabled.checked = FIXED_PLUS_MODE_ENABLED;
+    inputPlusModeEnabled.checked = Boolean(state?.plusModeEnabled);
   }
   if (typeof selectPlusPaymentMethod !== 'undefined' && selectPlusPaymentMethod) {
     selectPlusPaymentMethod.value = normalizePlusPaymentMethod(state?.plusPaymentMethod);
@@ -17596,7 +17659,7 @@ function getPhoneSmsCountrySelectionForProvider(provider = getSelectedPhoneSmsPr
     ? { id: DEFAULT_FIVE_SIM_COUNTRY_ID, label: DEFAULT_FIVE_SIM_COUNTRY_LABEL }
     : (
       normalizedProvider === PHONE_SMS_PROVIDER_SMSPOOL
-        ? { id: DEFAULT_SMSPOOL_COUNTRY_ID, label: DEFAULT_SMSPOOL_COUNTRY_LABEL }
+        ? { id: DEFAULT_SMSPOOL_COUNTRY_ID, label: normalizeSmsPoolCountryLabel(DEFAULT_SMSPOOL_COUNTRY_ID) }
         : { id: DEFAULT_HERO_SMS_COUNTRY_ID, label: DEFAULT_HERO_SMS_COUNTRY_LABEL }
     );
 
@@ -17818,11 +17881,18 @@ async function switchPhoneSmsProvider(nextProvider) {
     };
     restoredFallback = normalizeHeroSmsCountryFallbackList(latestState?.grizzlySmsCountryFallback || []);
   } else if (normalizedNextProvider === PHONE_SMS_PROVIDER_SMSPOOL) {
+    const smsPoolPrimaryId = normalizeHeroSmsCountryId(
+      latestState?.smsPoolCountryId || DEFAULT_SMSPOOL_COUNTRY_ID,
+      DEFAULT_SMSPOOL_COUNTRY_ID
+    );
     restoredPrimary = {
-      id: normalizeHeroSmsCountryId(latestState?.smsPoolCountryId || latestState?.heroSmsCountryId),
-      label: normalizeHeroSmsCountryLabel(latestState?.smsPoolCountryLabel || latestState?.heroSmsCountryLabel),
+      id: smsPoolPrimaryId,
+      label: normalizeSmsPoolCountryLabel(smsPoolPrimaryId, latestState?.smsPoolCountryLabel),
     };
-    restoredFallback = normalizeHeroSmsCountryFallbackList(latestState?.smsPoolCountryFallback || []);
+    restoredFallback = normalizeHeroSmsCountryFallbackList(latestState?.smsPoolCountryFallback || []).map((country) => ({
+      ...country,
+      label: normalizeSmsPoolCountryLabel(country.id, country.label),
+    }));
   } else if (normalizedNextProvider === PHONE_SMS_PROVIDER_CHATGPT_API) {
     restoredPrimary = {
       id: normalizeHeroSmsCountryId(latestState?.heroSmsCountryId),
@@ -20008,13 +20078,16 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
               : latestState?.grizzlySmsCountryFallback
           );
         } else if (activeProvider === PHONE_SMS_PROVIDER_SMSPOOL) {
+          const smsPoolPrimaryId = normalizeHeroSmsCountryId(
+            message.payload.smsPoolCountryId !== undefined
+              ? message.payload.smsPoolCountryId
+              : latestState?.smsPoolCountryId,
+            DEFAULT_SMSPOOL_COUNTRY_ID
+          );
           nextPrimary = {
-            id: normalizeHeroSmsCountryId(
-              message.payload.smsPoolCountryId !== undefined
-                ? message.payload.smsPoolCountryId
-                : latestState?.smsPoolCountryId
-            ),
-            label: normalizeHeroSmsCountryLabel(
+            id: smsPoolPrimaryId,
+            label: normalizeSmsPoolCountryLabel(
+              smsPoolPrimaryId,
               message.payload.smsPoolCountryLabel !== undefined
                 ? message.payload.smsPoolCountryLabel
                 : latestState?.smsPoolCountryLabel
@@ -20024,7 +20097,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
             message.payload.smsPoolCountryFallback !== undefined
               ? message.payload.smsPoolCountryFallback
               : latestState?.smsPoolCountryFallback
-          );
+          ).map((country) => ({
+            ...country,
+            label: normalizeSmsPoolCountryLabel(country.id, country.label),
+          }));
         } else {
           nextPrimary = {
             id: normalizeHeroSmsCountryId(
