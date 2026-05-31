@@ -309,10 +309,13 @@ if (shouldHandlePollEmailInCurrentFrame) {
   }
 
   function findItemMoreActionsButton(item) {
-    return Array.from(item.querySelectorAll('button[aria-haspopup="menu"], button[aria-label], button[title]'))
+    const root = getThreadListItemRoot(item) || item;
+    return Array.from(root.querySelectorAll('button[aria-haspopup="menu"], button[aria-label], button[title]'))
       .find((button) => {
+        if (!isVisibleElement(button)) return false;
         const text = getNodeSearchText(button);
-        return /more\s+actions|更多操作/i.test(text);
+        return /more\s+actions|more|更多操作|更多/i.test(text)
+          || button.getAttribute('aria-haspopup') === 'menu';
       }) || null;
   }
 
@@ -338,6 +341,63 @@ if (shouldHandlePollEmailInCurrentFrame) {
     ];
   }
 
+  function normalizeSvgPathData(value) {
+    return String(value || '').replace(/\s+/g, '');
+  }
+
+  function isVisibleDomNode(node) {
+    if (!(node instanceof Element)) return false;
+    const rect = node.getBoundingClientRect();
+    const style = getComputedStyle(node);
+    return style.display !== 'none'
+      && style.visibility !== 'hidden'
+      && rect.width > 0
+      && rect.height > 0;
+  }
+
+  function isMoveToInboxSvgIcon(svg) {
+    if (!(svg instanceof SVGElement)) return false;
+
+    const className = String(svg.getAttribute('class') || '');
+    const viewBox = String(svg.getAttribute('viewBox') || '');
+    const pathData = normalizeSvgPathData(
+      Array.from(svg.querySelectorAll('path'))
+        .map((path) => path.getAttribute('d') || '')
+        .join(' ')
+    );
+
+    const hasLayoutBoxClass = /\blayout-box\b/.test(className);
+    const hasExpectedViewBox = viewBox.startsWith('0 0 267.929');
+    const hasExpectedPath = [
+      'M27.77896.51468L112.2336.51468',
+      'C52.4605-24.206160.123-17.498370.0265-17.4983',
+      'L119.697-9.03137C119.697-3.99979116.942-1.39054112.108-1.39054',
+    ].every((signature) => pathData.includes(signature));
+
+    return hasExpectedPath || (hasLayoutBoxClass && hasExpectedViewBox);
+  }
+
+  function isMailboxNavigationTarget(node) {
+    if (!(node instanceof Element)) return false;
+    const text = normalizeText(node.textContent || node.getAttribute('aria-label') || '');
+    return Boolean(node.closest('.mailbox-list-item, [role="treeitem"], nav, aside'))
+      || /^(inbox|收件箱|junk|spam|垃圾邮件|垃圾郵件|trash|archive|drafts|sent|vip)$/i.test(text);
+  }
+
+  function findMoveToInboxMenuItemByIcon() {
+    const icons = Array.from(document.querySelectorAll('svg.icon.layout-box, svg.layout-box, svg'));
+    for (const icon of icons) {
+      if (!isVisibleDomNode(icon) || !isMoveToInboxSvgIcon(icon)) {
+        continue;
+      }
+      const target = getMenuItemClickTarget(icon);
+      if (target && isVisibleElement(target) && !isMailboxNavigationTarget(target)) {
+        return target;
+      }
+    }
+    return null;
+  }
+
   async function waitForMenuItem(patterns, timeout = 2500) {
     const start = Date.now();
     while (Date.now() - start < timeout) {
@@ -354,7 +414,12 @@ if (shouldHandlePollEmailInCurrentFrame) {
       const match = candidates.find((node) => {
         if (!isVisibleElement(node)) return false;
         const text = getNodeSearchText(node);
-        return text.length <= 80 && patterns.some((pattern) => pattern.test(text));
+        const containsMultipleMenuItems = /reply|forward|flag|mark message|move message|archive message|delete message|回复|转发|旗标|归档|删除/.test(text.toLowerCase())
+          && patterns.some((pattern) => pattern.test(text))
+          && text.length > 24;
+        return text.length <= 80
+          && !containsMultipleMenuItems
+          && patterns.some((pattern) => pattern.test(text));
       });
       if (match) {
         return match;
@@ -365,9 +430,166 @@ if (shouldHandlePollEmailInCurrentFrame) {
   }
 
   function getMenuItemClickTarget(node) {
-    return node?.closest?.('[role="menuitem"], [role="option"], button, li')
-      || node?.closest?.('div')
-      || node;
+    const directTarget = node?.closest?.('[role="menuitem"], [role="option"], button, li');
+    if (directTarget) {
+      return directTarget;
+    }
+
+    let target = null;
+    let targetWidth = 0;
+    let current = node instanceof Element ? node : null;
+    for (let depth = 0; current && depth < 6; depth += 1, current = current.parentElement) {
+      if (!(current instanceof HTMLElement) || !isVisibleElement(current)) {
+        continue;
+      }
+      const rect = current.getBoundingClientRect();
+      if (rect.width >= 80 && rect.height >= 24 && rect.height <= 80) {
+        if (rect.width > targetWidth) {
+          target = current;
+          targetWidth = rect.width;
+        }
+      }
+    }
+    if (target) {
+      return target;
+    }
+
+    return node?.closest?.('div') || node;
+  }
+
+  function getElementClientPoint(node) {
+    const rect = node?.getBoundingClientRect?.();
+    if (!rect) {
+      return { clientX: 0, clientY: 0 };
+    }
+    return {
+      clientX: Math.round(rect.left + Math.min(Math.max(rect.width * 0.55, 24), Math.max(rect.width - 24, 24))),
+      clientY: Math.round(rect.top + Math.min(Math.max(rect.height * 0.5, 12), Math.max(rect.height - 12, 12))),
+    };
+  }
+
+  function dispatchMouseLikeEvent(target, type, options = {}) {
+    const eventInit = {
+      bubbles: true,
+      cancelable: true,
+      view: window,
+      composed: true,
+      ...options,
+    };
+    if (type.startsWith('pointer') && typeof PointerEvent === 'function') {
+      target.dispatchEvent(new PointerEvent(type, {
+        pointerId: 1,
+        pointerType: 'mouse',
+        isPrimary: true,
+        ...eventInit,
+      }));
+      return;
+    }
+    target.dispatchEvent(new MouseEvent(type, eventInit));
+  }
+
+  function simulateContextMenu(node) {
+    throwIfStopped();
+    if (!(node instanceof Element)) {
+      return false;
+    }
+    node.scrollIntoView?.({ block: 'center', inline: 'center' });
+    const point = getElementClientPoint(node);
+    const eventInit = {
+      ...point,
+      button: 2,
+      buttons: 2,
+      detail: 1,
+    };
+
+    dispatchMouseLikeEvent(node, 'pointerover', eventInit);
+    dispatchMouseLikeEvent(node, 'mouseover', eventInit);
+    dispatchMouseLikeEvent(node, 'pointermove', eventInit);
+    dispatchMouseLikeEvent(node, 'mousemove', eventInit);
+    dispatchMouseLikeEvent(node, 'pointerdown', eventInit);
+    dispatchMouseLikeEvent(node, 'mousedown', eventInit);
+    dispatchMouseLikeEvent(node, 'contextmenu', eventInit);
+    dispatchMouseLikeEvent(node, 'pointerup', { ...eventInit, buttons: 0 });
+    dispatchMouseLikeEvent(node, 'mouseup', { ...eventInit, buttons: 0 });
+    return true;
+  }
+
+  function simulatePrimaryClick(node) {
+    throwIfStopped();
+    const target = getMenuItemClickTarget(node);
+    if (!(target instanceof Element)) {
+      return false;
+    }
+
+    target.scrollIntoView?.({ block: 'center', inline: 'center' });
+    const point = getElementClientPoint(target);
+    const eventTarget = document.elementFromPoint(point.clientX, point.clientY) || target;
+    const eventInit = {
+      ...point,
+      button: 0,
+      buttons: 1,
+      detail: 1,
+    };
+
+    target.focus?.();
+    dispatchMouseLikeEvent(eventTarget, 'pointerover', eventInit);
+    dispatchMouseLikeEvent(eventTarget, 'mouseover', eventInit);
+    dispatchMouseLikeEvent(eventTarget, 'pointermove', eventInit);
+    dispatchMouseLikeEvent(eventTarget, 'mousemove', eventInit);
+    dispatchMouseLikeEvent(eventTarget, 'pointerdown', eventInit);
+    dispatchMouseLikeEvent(eventTarget, 'mousedown', eventInit);
+    dispatchMouseLikeEvent(eventTarget, 'pointerup', { ...eventInit, buttons: 0 });
+    dispatchMouseLikeEvent(eventTarget, 'mouseup', { ...eventInit, buttons: 0 });
+    dispatchMouseLikeEvent(eventTarget, 'click', { ...eventInit, buttons: 0 });
+    return true;
+  }
+
+  async function waitForMoveToInboxMenuItem(timeout = 2500, options = {}) {
+    const allowIconMatch = options.allowIconMatch !== false;
+    const start = Date.now();
+    while (Date.now() - start < timeout) {
+      throwIfStopped();
+      const textMatch = await waitForMenuItem(getMoveToInboxPatterns(), 100);
+      if (textMatch) {
+        return textMatch;
+      }
+
+      if (allowIconMatch) {
+        const iconMatch = findMoveToInboxMenuItemByIcon();
+        if (iconMatch) {
+          return iconMatch;
+        }
+      }
+
+      await sleep(100);
+    }
+    return null;
+  }
+
+  async function openMoveToInboxMenuForItem(item) {
+    const root = getThreadListItemRoot(item) || item;
+    const threadDetails = item.querySelector('.thread-details') || item;
+
+    simulateContextMenu(root);
+    let moveToInbox = await waitForMoveToInboxMenuItem(700);
+    if (moveToInbox) {
+      return moveToInbox;
+    }
+
+    simulateContextMenu(threadDetails);
+    moveToInbox = await waitForMoveToInboxMenuItem(700);
+    if (moveToInbox) {
+      return moveToInbox;
+    }
+
+    const moreActions = findItemMoreActionsButton(item) || await waitForMoreActionsButton();
+    if (!moreActions) {
+      log('iCloud 邮箱：未找到邮件更多操作按钮，无法移动 Junk 邮件。', 'warn');
+      return null;
+    }
+
+    simulateClick(moreActions);
+    return waitForMoveToInboxMenuItem();
   }
 
   async function moveJunkItemToInbox(item) {
@@ -378,27 +600,20 @@ if (shouldHandlePollEmailInCurrentFrame) {
     simulateClick(threadDetails);
     await sleep(500);
 
-    let moveToInbox = await waitForMenuItem(getMoveToInboxPatterns(), 300);
+    let moveToInbox = await waitForMoveToInboxMenuItem(300, { allowIconMatch: false });
     if (moveToInbox) {
-      simulateClick(getMenuItemClickTarget(moveToInbox));
+      simulatePrimaryClick(moveToInbox);
       await sleep(1600);
       return true;
     }
 
-    const moreActions = findItemMoreActionsButton(item) || await waitForMoreActionsButton();
-    if (!moreActions) {
-      log('iCloud 邮箱：未找到邮件更多操作按钮，无法移动 Junk 邮件。', 'warn');
-      return false;
-    }
-
-    simulateClick(moreActions);
-    moveToInbox = await waitForMenuItem(getMoveToInboxPatterns());
+    moveToInbox = await openMoveToInboxMenuForItem(item);
     if (!moveToInbox) {
       log('iCloud 邮箱：未找到“移到收件箱”菜单项。', 'warn');
       return false;
     }
 
-    simulateClick(getMenuItemClickTarget(moveToInbox));
+    simulatePrimaryClick(moveToInbox);
     await sleep(1600);
     return true;
   }
