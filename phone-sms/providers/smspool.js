@@ -714,6 +714,60 @@
     return null;
   }
 
+  async function findHistoryActivationByPhoneNumber(state = {}, phoneNumber = '', deps = {}) {
+    const normalizedPhoneNumber = String(phoneNumber || '').trim();
+    if (!normalizedPhoneNumber) {
+      return null;
+    }
+    const config = resolveConfig(state, deps);
+    let payload = null;
+    try {
+      payload = await postForm(config, '/request/history', {
+        key: config.apiKey,
+      }, 'SMSPool history phone lookup');
+    } catch (error) {
+      await deps.addLog?.(`步骤 9：SMSPool 按手机号查询历史订单失败。${error?.message || error}`, 'warn');
+      return null;
+    }
+    const matches = collectSmsPoolHistoryOrders(payload)
+      .map((record, index) => {
+        const activation = normalizeActivation(record, {
+          serviceCode: normalizeServiceCode(state.smsPoolServiceCode, DEFAULT_SERVICE_CODE),
+          countryId: normalizeCountryId(state.smsPoolCountryId, DEFAULT_COUNTRY_ID),
+          countryLabel: normalizeCountryLabel(state.smsPoolCountryLabel, DEFAULT_COUNTRY_LABEL),
+          successfulUses: 1,
+        });
+        return activation ? { activation, record, index } : null;
+      })
+      .filter(Boolean)
+      .filter(({ activation, record }) => (
+        phoneNumbersMatch(activation.phoneNumber, normalizedPhoneNumber)
+        && isConfiguredSmsPoolServiceOrder(record, state)
+        && isConfiguredSmsPoolCountryOrder(record, state)
+      ))
+      .sort((left, right) => {
+        const rightTime = normalizeSmsPoolTimestamp(right.record);
+        const leftTime = normalizeSmsPoolTimestamp(left.record);
+        if (rightTime !== leftTime) {
+          return rightTime - leftTime;
+        }
+        return left.index - right.index;
+      });
+    if (!matches.length) {
+      return null;
+    }
+    const { activation, record } = matches[0];
+    await deps.addLog?.(
+      `步骤 9：SMSPool 已按手机号 ${normalizedPhoneNumber} 找到历史订单 #${activation.activationId}，将自动请求 Resend。`,
+      'info'
+    );
+    return {
+      ...activation,
+      successfulUses: Math.max(1, activation.successfulUses || 0),
+      smsPoolIgnoredCodes: Array.from(collectCodesFromSmsPoolPayload(record)),
+    };
+  }
+
   function isTerminalStatusPayload(payloadOrMessage) {
     const text = describePayload(payloadOrMessage).toLowerCase();
     return /cancel|expired|timeout|closed|order\s+not\s+found|invalid\s+order|invalid\s+number|does\s+not\s+exist/i.test(text);
@@ -825,7 +879,14 @@
   }
 
   async function requestAdditionalSms(state = {}, activation, deps = {}) {
-    const normalizedActivation = normalizeActivation(activation, activation);
+    let normalizedActivation = normalizeActivation(activation, activation);
+    if (!normalizedActivation) {
+      normalizedActivation = await findHistoryActivationByPhoneNumber(
+        state,
+        activation?.phoneNumber ?? activation?.number ?? activation?.phone ?? activation,
+        deps
+      );
+    }
     if (!normalizedActivation) {
       return '';
     }

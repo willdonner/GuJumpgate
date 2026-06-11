@@ -402,7 +402,7 @@
       if (!form) {
         return null;
       }
-      return form.querySelector('input[name="channel"]');
+      return form.querySelector('input[name="channel"]:not([type="radio"])');
     }
 
     function getChannelOptionText(option) {
@@ -420,6 +420,38 @@
       ].filter(Boolean).join(' '));
     }
 
+    function isChannelOptionMarkedSelected(input, label, optionRoot) {
+      const stateValues = [
+        label?.getAttribute?.('data-state'),
+        optionRoot?.getAttribute?.('data-state'),
+        label?.getAttribute?.('data-selected'),
+        optionRoot?.getAttribute?.('data-selected'),
+        label?.getAttribute?.('aria-checked'),
+        optionRoot?.getAttribute?.('aria-checked'),
+        input?.getAttribute?.('aria-checked'),
+      ].map((value) => String(value || '').trim().toLowerCase());
+      return Boolean(
+        input?.checked
+        || stateValues.some((value) => value === 'on' || value === 'true' || value === 'checked' || value === 'selected')
+      );
+    }
+
+    function isChannelOptionDisabled(input, label, optionRoot) {
+      const disabledValues = [
+        label?.getAttribute?.('aria-disabled'),
+        optionRoot?.getAttribute?.('aria-disabled'),
+        input?.getAttribute?.('aria-disabled'),
+        label?.getAttribute?.('data-disabled'),
+        optionRoot?.getAttribute?.('data-disabled'),
+      ].map((value) => String(value || '').trim().toLowerCase());
+      return Boolean(
+        input?.disabled
+        || label?.matches?.(':disabled')
+        || optionRoot?.matches?.(':disabled')
+        || disabledValues.some((value) => value === 'true' || value === 'disabled')
+      );
+    }
+
     function getAddPhoneChannelOptions() {
       const form = getAddPhoneForm();
       if (!form) {
@@ -433,13 +465,11 @@
         const normalizedValue = String(input.value || '').trim().toLowerCase();
         const hiddenChannelInput = getAddPhoneChannelInput();
         const hiddenValue = String(hiddenChannelInput?.value || '').trim().toLowerCase();
-        const dataState = String(label?.getAttribute?.('data-state') || optionRoot?.getAttribute?.('data-state') || '').trim().toLowerCase();
         const channel = normalizedValue === 'sms' || isSmsChannelText(text)
           ? 'sms'
           : (normalizedValue === 'whatsapp' || isWhatsAppChannelText(text) ? 'whatsapp' : '');
         const checked = Boolean(
-          input.checked
-          || dataState === 'on'
+          isChannelOptionMarkedSelected(input, label, optionRoot)
           || (hiddenValue && channel && hiddenValue === channel)
         );
         return {
@@ -449,6 +479,7 @@
           channel,
           text,
           checked,
+          disabled: isChannelOptionDisabled(input, label, optionRoot),
         };
       }).filter((entry) => entry.channel || entry.text);
     }
@@ -459,6 +490,9 @@
       }
       const target = option.label || option.optionRoot || option.input;
       if (!target || !isVisibleElement(target)) {
+        return false;
+      }
+      if (option.disabled) {
         return false;
       }
       await performOperationWithDelay({ stepKey: 'phone-auth', kind: 'click', label: 'phone-channel-sms' }, async () => {
@@ -480,13 +514,18 @@
           entry.input.checked = entry.input === option.input;
           if (entry.label?.setAttribute) {
             entry.label.setAttribute('data-state', entry.input.checked ? 'on' : 'off');
+            entry.label.setAttribute('data-selected', entry.input.checked ? 'true' : 'false');
+            entry.label.setAttribute('aria-checked', entry.input.checked ? 'true' : 'false');
           }
           if (entry.optionRoot?.setAttribute && entry.optionRoot !== entry.label) {
             entry.optionRoot.setAttribute('data-state', entry.input.checked ? 'on' : 'off');
+            entry.optionRoot.setAttribute('data-selected', entry.input.checked ? 'true' : 'false');
+            entry.optionRoot.setAttribute('aria-checked', entry.input.checked ? 'true' : 'false');
           }
         });
         option.input.checked = true;
         option.input.setAttribute?.('checked', '');
+        option.input.setAttribute?.('aria-checked', 'true');
         option.input.dispatchEvent?.(new Event('input', { bubbles: true }));
         option.input.dispatchEvent?.(new Event('change', { bubbles: true }));
         if (hiddenChannelInput) {
@@ -507,6 +546,14 @@
       return checkedOption?.channel || '';
     }
 
+    function createAddPhoneWhatsAppRestartError(detailText = '') {
+      const deliveryInfo = getAddPhoneDeliveryInfo();
+      const text = normalizeInlineText(detailText || deliveryInfo.text || 'WhatsApp');
+      return new Error(
+        `${STEP9_WHATSAPP_PAGE_RESTART_ERROR_PREFIX}步骤 9：当前添加手机号页面仍停留在 WhatsApp 发送通道，无法使用接码平台读取验证码，需释放当前号码并从 open-chatgpt 重开自动流程。页面文案：${text || 'WhatsApp'}；URL: ${location.href}`
+      );
+    }
+
     async function ensureSmsChannelSelected() {
       const options = getAddPhoneChannelOptions();
       if (!options.length) {
@@ -519,6 +566,9 @@
 
       const smsOption = options.find((entry) => entry.channel === 'sms');
       if (!smsOption) {
+        if (options.some((entry) => entry.channel === 'whatsapp' && entry.checked)) {
+          throw createAddPhoneWhatsAppRestartError('Add-phone page shows WhatsApp, but no Text Message / SMS option is available.');
+        }
         throw new Error('Add-phone page shows "Send code via" but no Text Message / SMS option is available.');
       }
 
@@ -530,6 +580,9 @@
           channel: 'sms',
         };
       }
+      if (smsOption.disabled) {
+        throw createAddPhoneWhatsAppRestartError('Text Message / SMS option is disabled on the add-phone page.');
+      }
 
       let changed = false;
       if (await clickSmsChannelOption(smsOption)) {
@@ -537,7 +590,7 @@
       }
       await sleep(150);
 
-      if (getCurrentAddPhoneChannel() !== 'sms' || !smsOption.input.checked) {
+      if (getCurrentAddPhoneChannel() !== 'sms' || !getAddPhoneChannelOptions().find((entry) => entry.channel === 'sms')?.checked) {
         await forceSmsChannelState(smsOption);
         changed = true;
         await sleep(50);
@@ -545,7 +598,13 @@
 
       const finalChannel = getCurrentAddPhoneChannel();
       const refreshedSmsOption = getAddPhoneChannelOptions().find((entry) => entry.channel === 'sms');
-      if (finalChannel !== 'sms' || !refreshedSmsOption?.input?.checked) {
+      if (finalChannel !== 'sms' || !refreshedSmsOption?.checked) {
+        if (
+          finalChannel === 'whatsapp'
+          || getAddPhoneChannelOptions().some((entry) => entry.channel === 'whatsapp' && entry.checked)
+        ) {
+          throw createAddPhoneWhatsAppRestartError('Failed to switch add-phone delivery channel from WhatsApp to Text Message / SMS.');
+        }
         throw new Error('Failed to force Text Message / SMS on the add-phone page.');
       }
 

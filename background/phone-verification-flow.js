@@ -5215,7 +5215,7 @@
           message: eligibility.message || `${providerLabel} 当前不能白嫖复用。`,
         };
       }
-      if (!String(normalizedActivation.activationId || '').trim()) {
+      if (!String(normalizedActivation.activationId || '').trim() && providerId !== PHONE_SMS_PROVIDER_SMSPOOL) {
         return {
           ok: false,
           reason: 'missing_activation_id',
@@ -5233,13 +5233,23 @@
             : (providerId === PHONE_SMS_PROVIDER_SMSPOOL
               ? getSmsPoolProviderForState(state)
               : getSmsBowerProviderForState(state));
-          const reactivated = provider?.reuseActivation
-            ? await provider.reuseActivation(state, normalizedActivation)
-            : (
-              provider?.requestAdditionalSms
-                ? await provider.requestAdditionalSms(state, normalizedActivation).then(() => normalizedActivation)
-                : await reactivatePhoneActivation(state, normalizedActivation)
-            );
+          const reactivated = providerId === PHONE_SMS_PROVIDER_SMSPOOL && provider?.requestAdditionalSms
+            ? await provider.requestAdditionalSms(state, normalizedActivation).then((result) => {
+              const additionalActivation = normalizeActivation(result?.activation);
+              if (!additionalActivation) {
+                throw new Error(`SMSPool 未找到手机号 ${normalizedActivation.phoneNumber} 的历史订单，无法自动 Resend。`);
+              }
+              return additionalActivation;
+            })
+            : (provider?.reuseActivation
+              ? await provider.reuseActivation(state, normalizedActivation)
+              : (
+                provider?.requestAdditionalSms
+                  ? await provider.requestAdditionalSms(state, normalizedActivation).then((result) => (
+                    result?.activation || normalizedActivation
+                  ))
+                  : await reactivatePhoneActivation(state, normalizedActivation)
+              ));
           return {
             ok: true,
             activation: {
@@ -6082,9 +6092,14 @@
         return null;
       }
 
+      const freeReuseProviderId = getActivationProviderId(freeReusableActivation, state);
+      const canResolveSmsPoolManualReuse = freeReuseProviderId === PHONE_SMS_PROVIDER_SMSPOOL
+        && Boolean(String(freeReusableActivation.phoneNumber || '').trim());
       const canPrepareAutomaticFreeReuse = normalizeFreePhoneReuseAutoEnabled(state)
-        && !freeReusableActivation.manualOnly
-        && Boolean(String(freeReusableActivation.activationId || '').trim());
+        && (
+          (!freeReusableActivation.manualOnly && Boolean(String(freeReusableActivation.activationId || '').trim()))
+          || canResolveSmsPoolManualReuse
+        );
 
       if (canPrepareAutomaticFreeReuse) {
         const pendingActivation = {
