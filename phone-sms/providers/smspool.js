@@ -14,6 +14,7 @@
   const ACTIVATION_RETRY_ROUNDS_MIN = 1;
   const ACTIVATION_RETRY_ROUNDS_MAX = 10;
   const DEFAULT_ACTIVATION_RETRY_DELAY_MS = 2000;
+  const DEFAULT_HISTORY_REUSE_CANDIDATE_LIMIT = 12;
 
   function normalizeCountryId(value, fallback = DEFAULT_COUNTRY_ID) {
     const parsed = Math.floor(Number(value));
@@ -182,6 +183,121 @@
     return Math.max(500, Math.min(30000, parsed));
   }
 
+  function normalizePhoneSmsReuseEnabled(state = {}) {
+    if (Object.prototype.hasOwnProperty.call(state || {}, 'phoneSmsReuseEnabled')) {
+      return Boolean(state.phoneSmsReuseEnabled);
+    }
+    if (Object.prototype.hasOwnProperty.call(state || {}, 'heroSmsReuseEnabled')) {
+      return Boolean(state.heroSmsReuseEnabled);
+    }
+    return false;
+  }
+
+  function normalizePhoneDigits(value = '') {
+    return String(value || '').replace(/\D+/g, '');
+  }
+
+  function phoneNumbersMatch(left = '', right = '') {
+    const leftDigits = normalizePhoneDigits(left);
+    const rightDigits = normalizePhoneDigits(right);
+    if (!leftDigits || !rightDigits) {
+      return false;
+    }
+    return leftDigits === rightDigits
+      || leftDigits.endsWith(rightDigits)
+      || rightDigits.endsWith(leftDigits);
+  }
+
+  function normalizeExcludedPhoneNumbers(value = []) {
+    const source = Array.isArray(value) ? value : [];
+    const normalized = [];
+    source.forEach((entry) => {
+      const phoneNumber = String(
+        entry?.phoneNumber
+        ?? entry?.number
+        ?? entry?.phone
+        ?? entry
+        ?? ''
+      ).trim();
+      if (phoneNumber && !normalized.some((saved) => phoneNumbersMatch(saved, phoneNumber))) {
+        normalized.push(phoneNumber);
+      }
+    });
+    return normalized;
+  }
+
+  function normalizeServiceText(value = '') {
+    return String(value || '').trim().toLowerCase().replace(/\s+/g, ' ');
+  }
+
+  function isConfiguredSmsPoolServiceOrder(record = {}, state = {}) {
+    const configuredServiceCode = normalizeServiceCode(state.smsPoolServiceCode, DEFAULT_SERVICE_CODE);
+    const rawServiceCode = String(
+      record.serviceCode
+      ?? record.service_id
+      ?? record.serviceid
+      ?? record.serviceID
+      ?? record.service_code
+      ?? ''
+    ).trim();
+    if (rawServiceCode) {
+      return rawServiceCode === configuredServiceCode;
+    }
+    const serviceText = normalizeServiceText(record.service ?? record.service_name ?? record.serviceName ?? record.short_name);
+    if (!serviceText) {
+      return false;
+    }
+    if (/^\d+$/.test(serviceText)) {
+      return serviceText === configuredServiceCode;
+    }
+    const configuredLabel = normalizeServiceText(state.smsPoolServiceLabel || DEFAULT_SERVICE_LABEL);
+    return serviceText === configuredLabel
+      || serviceText.includes('openai')
+      || serviceText.includes('chatgpt');
+  }
+
+  function isConfiguredSmsPoolCountryOrder(record = {}, state = {}) {
+    const rawCountryId = record.countryId ?? record.country_id ?? record.countryid ?? record.countryID;
+    const countryId = normalizeCountryId(rawCountryId, 0);
+    const configuredCountryId = normalizeCountryId(state.smsPoolCountryId, DEFAULT_COUNTRY_ID);
+    if (countryId > 0) {
+      return countryId === configuredCountryId;
+    }
+    const countryText = normalizeServiceText(record.countryLabel || record.country || record.short_name || record.shortName);
+    if (!countryText) {
+      return true;
+    }
+    const configuredLabel = normalizeServiceText(state.smsPoolCountryLabel || DEFAULT_COUNTRY_LABEL);
+    if (countryText === configuredLabel) {
+      return true;
+    }
+    const configuredCountryAliases = configuredCountryId === DEFAULT_COUNTRY_ID
+      ? ['us', 'usa', 'united states', 'united states of america']
+      : [configuredLabel].filter(Boolean);
+    return configuredCountryAliases.includes(countryText);
+  }
+
+  function isCompletedSmsPoolHistoryOrder(record = {}) {
+    const statusText = normalizeServiceText(record.status || record.statusText || record.state);
+    if (statusText && !/completed|complete|received|success|done|finished/.test(statusText)) {
+      return false;
+    }
+    return Boolean(extractCodeFromSmsPoolPayload(record));
+  }
+
+  function normalizeSmsPoolTimestamp(record = {}) {
+    const raw = record.timestamp ?? record.created_at ?? record.createdAt ?? record.date ?? record.time;
+    if (raw === undefined || raw === null || raw === '') {
+      return 0;
+    }
+    const numeric = Number(raw);
+    if (Number.isFinite(numeric) && numeric > 0) {
+      return numeric < 100000000000 ? numeric * 1000 : numeric;
+    }
+    const parsed = Date.parse(String(raw));
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+
   async function postForm(config, path, body = {}, actionLabel = 'SMSPool request', requireApiKey = true) {
     if (requireApiKey && !config.apiKey) {
       throw new Error('SMSPool API Key 缺失，请先在侧边栏保存接码 API Key。');
@@ -279,6 +395,7 @@
       record.activationId
       ?? record.orderid
       ?? record.order_id
+      ?? record.order_code
       ?? record.orderCode
       ?? record.id
       ?? ''
@@ -471,16 +588,147 @@
     return Array.from(existingCodes);
   }
 
+  function collectSmsPoolHistoryOrders(payload, orders = []) {
+    if (!payload) {
+      return orders;
+    }
+    if (Array.isArray(payload)) {
+      payload.forEach((entry) => collectSmsPoolHistoryOrders(entry, orders));
+      return orders;
+    }
+    if (typeof payload !== 'object') {
+      return orders;
+    }
+    const normalized = normalizeActivation(payload, payload);
+    if (normalized) {
+      orders.push(payload);
+    }
+    [
+      payload.data,
+      payload.orders,
+      payload.history,
+      payload.results,
+      payload.items,
+      payload.records,
+    ].forEach((items) => collectSmsPoolHistoryOrders(items, orders));
+    return orders;
+  }
+
+  async function fetchCompletedHistoryReuseCandidates(state = {}, options = {}, deps = {}) {
+    if (!normalizePhoneSmsReuseEnabled(state) || options?.skipSmsPoolHistoryReuse === true) {
+      return [];
+    }
+    const config = resolveConfig(state, deps);
+    let payload = null;
+    try {
+      payload = await postForm(config, '/request/history', {
+        key: config.apiKey,
+      }, 'SMSPool history');
+    } catch (error) {
+      await deps.addLog?.(`步骤 9：SMSPool 历史订单查询失败，将继续正常取号。${error?.message || error}`, 'warn');
+      return [];
+    }
+
+    const excludedPhoneNumbers = normalizeExcludedPhoneNumbers(options?.excludedPhoneNumbers);
+    const seen = new Set();
+    const candidates = collectSmsPoolHistoryOrders(payload)
+      .map((record, index) => {
+        const normalized = normalizeActivation(record, {
+          serviceCode: normalizeServiceCode(state.smsPoolServiceCode, DEFAULT_SERVICE_CODE),
+          countryId: normalizeCountryId(state.smsPoolCountryId, DEFAULT_COUNTRY_ID),
+          countryLabel: normalizeCountryLabel(state.smsPoolCountryLabel, DEFAULT_COUNTRY_LABEL),
+          successfulUses: 1,
+        });
+        return normalized ? { record, activation: normalized, index } : null;
+      })
+      .filter(Boolean)
+      .filter(({ record, activation }) => {
+        const key = `${activation.activationId}::${activation.phoneNumber}`;
+        if (seen.has(key)) {
+          return false;
+        }
+        seen.add(key);
+        return isCompletedSmsPoolHistoryOrder(record)
+          && isConfiguredSmsPoolServiceOrder(record, state)
+          && isConfiguredSmsPoolCountryOrder(record, state)
+          && !excludedPhoneNumbers.some((entry) => phoneNumbersMatch(entry, activation.phoneNumber));
+      })
+      .sort((left, right) => {
+        const rightTime = normalizeSmsPoolTimestamp(right.record);
+        const leftTime = normalizeSmsPoolTimestamp(left.record);
+        if (rightTime !== leftTime) {
+          return rightTime - leftTime;
+        }
+        return left.index - right.index;
+      })
+      .slice(0, DEFAULT_HISTORY_REUSE_CANDIDATE_LIMIT)
+      .map(({ activation, record }) => ({
+        ...activation,
+        successfulUses: Math.max(1, activation.successfulUses || 0),
+        smsPoolIgnoredCodes: Array.from(collectCodesFromSmsPoolPayload(record)),
+      }));
+
+    if (candidates.length) {
+      await deps.addLog?.(`步骤 9：SMSPool 找到 ${candidates.length} 个已收短信历史订单，优先尝试复用。`, 'info');
+    }
+    return candidates;
+  }
+
+  async function reuseHistoryActivation(state = {}, activation, deps = {}) {
+    try {
+      const additionalResult = await requestAdditionalSms(state, activation, deps);
+      const additionalActivation = normalizeActivation(additionalResult?.activation, activation);
+      if (additionalActivation) {
+        return additionalActivation;
+      }
+    } catch (additionalError) {
+      await deps.addLog?.(
+        `步骤 9：SMSPool 历史订单 ${activation.phoneNumber} 重发准备失败，尝试重新激活。${additionalError?.message || additionalError}`,
+        'warn'
+      );
+    }
+    return reuseActivation(state, activation, deps);
+  }
+
+  async function findReusableHistoryActivation(state = {}, options = {}, deps = {}) {
+    const candidates = await fetchCompletedHistoryReuseCandidates(state, options, deps);
+    for (const candidate of candidates) {
+      deps.throwIfStopped?.();
+      try {
+        const activation = await reuseHistoryActivation(state, candidate, deps);
+        await deps.addLog?.(
+          `步骤 9：SMSPool 已优先复用历史已收短信号码 ${activation.phoneNumber}（订单 #${activation.activationId}）。`,
+          'info'
+        );
+        return {
+          ...activation,
+          successfulUses: Math.max(1, Number(candidate.successfulUses) || 1),
+        };
+      } catch (error) {
+        await deps.addLog?.(
+          `步骤 9：SMSPool 历史号码 ${candidate.phoneNumber} 复用失败，将尝试下一个历史订单或正常取号。${error?.message || error}`,
+          'warn'
+        );
+      }
+    }
+    return null;
+  }
+
   function isTerminalStatusPayload(payloadOrMessage) {
     const text = describePayload(payloadOrMessage).toLowerCase();
     return /cancel|expired|timeout|closed|order\s+not\s+found|invalid\s+order|invalid\s+number|does\s+not\s+exist/i.test(text);
   }
 
-  async function requestActivation(state = {}, _options = {}, deps = {}) {
+  async function requestActivation(state = {}, options = {}, deps = {}) {
     const config = resolveConfig(state, deps);
     const maxRounds = normalizeActivationRetryRounds(state?.heroSmsActivationRetryRounds, DEFAULT_ACTIVATION_RETRY_ROUNDS);
     const retryDelayMs = normalizeActivationRetryDelayMs(state?.heroSmsActivationRetryDelayMs, DEFAULT_ACTIVATION_RETRY_DELAY_MS);
     let lastError = null;
+
+    const historyActivation = await findReusableHistoryActivation(state, options, deps);
+    if (historyActivation) {
+      return historyActivation;
+    }
 
     for (let round = 1; round <= maxRounds; round += 1) {
       try {

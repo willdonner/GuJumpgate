@@ -2779,6 +2779,7 @@ async function step3_fillEmailPassword(payload) {
 // Fill Verification Code (used by step 4 and step 7)
 // ============================================================
 
+const PHONE_RECENTLY_USED_COOLDOWN_PATTERN = /this\s+phone\s+number\s+was\s+recently\s+used\.?\s+please\s+try\s+again\s+later|phone\s+number\s+was\s+recently\s+used|recently\s+used.*try\s+again\s+later/i;
 const INVALID_VERIFICATION_CODE_PATTERN = /代码不正确|验证码不正确|验证码错误|code\s+(?:is\s+)?incorrect|invalid\s+code|incorrect\s+code|try\s+again/i;
 const VERIFICATION_PAGE_PATTERN = /检查您的收件箱|输入我们刚刚向|重新发送电子邮件|重新发送验证码|代码不正确|email\s+verification|check\s+your\s+inbox|enter\s+the\s+code|we\s+just\s+sent|we\s+emailed|resend/i;
 const OAUTH_CONSENT_PAGE_PATTERN = /使用\s*ChatGPT\s*登录到\s*Codex|sign\s+in\s+to\s+codex(?:\s+with\s+chatgpt)?|login\s+to\s+codex|log\s+in\s+to\s+codex|authorize|授权/i;
@@ -2845,7 +2846,23 @@ function getVerificationErrorText() {
     }
   }
 
-  return messages.find((text) => INVALID_VERIFICATION_CODE_PATTERN.test(text)) || '';
+  const matchedMessage = messages.find((text) => (
+    INVALID_VERIFICATION_CODE_PATTERN.test(text)
+    || PHONE_RECENTLY_USED_COOLDOWN_PATTERN.test(text)
+  ));
+  if (matchedMessage) {
+    return matchedMessage;
+  }
+
+  const pageText = String(getPageTextSnapshot?.() || '').replace(/\s+/g, ' ').trim();
+  if (PHONE_RECENTLY_USED_COOLDOWN_PATTERN.test(pageText)) {
+    const concise = pageText.match(
+      /this\s+phone\s+number\s+was\s+recently\s+used\.?\s+please\s+try\s+again\s+later\.?/i
+    );
+    return String(concise?.[0] || pageText).trim();
+  }
+
+  return '';
 }
 
 function createSignupUserAlreadyExistsError() {

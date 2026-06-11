@@ -683,7 +683,18 @@
       if (!text) {
         return false;
       }
+      if (isPhoneNumberRecentlyUsedCooldownError(text)) {
+        return false;
+      }
       return /phone_max_usage_exceeded|phone_number_in_use|already\s+linked\s+to\s+the\s+maximum\s+number\s+of\s+accounts|phone\s+number\s+is\s+already\s+(?:in\s+use|linked|registered)|phone\s+number\s+has\s+already\s+been\s+used|already\s+associated\s+with\s+another\s+account|not\s+eligible\s+to\s+be\s+used|cannot\s+be\s+used\s+for\s+verification|号码.*(?:已|被).*(?:使用|占用|绑定|注册)|手机号.*(?:已|被).*(?:使用|占用|绑定|注册)|该手机号.*(?:已|被).*(?:使用|占用|绑定|注册)/i.test(text);
+    }
+
+    function isPhoneNumberRecentlyUsedCooldownError(value) {
+      const text = String(value || '').trim();
+      if (!text) {
+        return false;
+      }
+      return /this\s+phone\s+number\s+was\s+recently\s+used\.?\s+please\s+try\s+again\s+later|phone\s+number\s+was\s+recently\s+used|recently\s+used.*try\s+again\s+later/i.test(text);
     }
 
     function isPhoneNumberInvalidError(value) {
@@ -1354,6 +1365,7 @@
       const reasonMap = {
         returned_to_add_phone_loop: '反复返回添加手机号页',
         phone_number_used: '手机号已被使用',
+        phone_recently_used_cooldown: '手机号刚被使用，等待冷却',
         sms_not_received: '未收到短信',
         sms_timeout: '短信超时',
         resend_throttled: '重发短信被限流',
@@ -2190,6 +2202,26 @@
       if (typeof broadcastDataUpdate === 'function') {
         broadcastDataUpdate(updates);
       }
+    }
+
+    async function addPhoneNumberToCurrentAttemptExclusions(phoneNumber = '', reason = '') {
+      const normalizedPhoneNumber = String(phoneNumber || '').trim();
+      if (!normalizedPhoneNumber) {
+        return [];
+      }
+      const latestState = typeof getState === 'function' ? await getState() : {};
+      const nextExcludedNumbers = normalizeExcludedPhoneNumbers([
+        ...(latestState?.signupPhoneExcludedNumbersThisAttempt || []),
+        normalizedPhoneNumber,
+      ]);
+      await setPhoneRuntimeState({
+        signupPhoneExcludedNumbersThisAttempt: nextExcludedNumbers,
+      });
+      await addLog(
+        `步骤 9：已将临时不可用号码 ${normalizedPhoneNumber} 加入本轮跳过列表，不释放接码订单。${reason || ''}`.trim(),
+        'warn'
+      );
+      return nextExcludedNumbers;
     }
 
     async function persistFreeReusableActivation(activation) {
@@ -6339,6 +6371,7 @@
               {
                 blockedCountryIds: useBlockedCountryIds,
                 countryPriceFloorByCountryId: useCountryPriceFloorByCountryId,
+                excludedPhoneNumbers,
               }
             );
             if (!isExcludedPhoneNumber(activation?.phoneNumber)) {
@@ -7806,6 +7839,8 @@
       };
 
       const rotateActivationAfterAddPhoneFailure = async (failureReason, failureCode, submitState = {}) => {
+        const preserveActivation = isPhoneNumberRecentlyUsedCooldownError(failureReason)
+          || String(failureCode || '').trim() === 'phone_recently_used_cooldown';
         await markPreferredActivationExhausted(failureCode || failureReason);
         usedNumberReplacementAttempts += 1;
         if (usedNumberReplacementAttempts > maxNumberReplacementAttempts) {
@@ -7815,7 +7850,12 @@
           `步骤 9：添加手机号失败后正在更换号码（${formatStep9Reason(failureReason)}，${usedNumberReplacementAttempts}/${maxNumberReplacementAttempts}）。`,
           'warn'
         );
-        if (shouldReleaseActivationOnReplacement(activation, shouldCancelActivation)) {
+        if (preserveActivation) {
+          await addPhoneNumberToCurrentAttemptExclusions(
+            activation?.phoneNumber,
+            `OpenAI 提示：${failureReason}`
+          );
+        } else if (shouldReleaseActivationOnReplacement(activation, shouldCancelActivation)) {
           await cancelPhoneActivation(state, activation, { forceTerminalStatus: true });
         }
         await clearCurrentActivation();
@@ -7948,6 +7988,14 @@
                 throw submitError;
               }
               const submitErrorText = String(submitError?.message || submitError || 'unknown error');
+              if (isPhoneNumberRecentlyUsedCooldownError(submitErrorText)) {
+                await rotateActivationAfterAddPhoneFailure(
+                  submitErrorText,
+                  'phone_recently_used_cooldown',
+                  { url: pageState?.url || '' }
+                );
+                continue;
+              }
               if (isPhoneNumberDeliveryRefusedError(submitErrorText) || isRecoverableAddPhoneSubmitError(submitErrorText)) {
                 await rotateActivationAfterAddPhoneFailure(
                   submitErrorText,
@@ -7960,6 +8008,14 @@
             }
             if (submitResult.addPhoneRejected) {
               const addPhoneRejectText = String(submitResult.errorText || submitResult.url || 'unknown error');
+              if (isPhoneNumberRecentlyUsedCooldownError(addPhoneRejectText)) {
+                await rotateActivationAfterAddPhoneFailure(
+                  addPhoneRejectText,
+                  'phone_recently_used_cooldown',
+                  submitResult || {}
+                );
+                continue;
+              }
               if (isPhoneNumberUsedError(addPhoneRejectText)) {
                 usedNumberReplacementAttempts += 1;
                 if (usedNumberReplacementAttempts > maxNumberReplacementAttempts) {
@@ -8025,15 +8081,19 @@
                   || 'unknown error'
                 );
                 if (
-                  isPhoneNumberUsedError(retryRejectText)
+                  isPhoneNumberRecentlyUsedCooldownError(retryRejectText)
+                  || isPhoneNumberUsedError(retryRejectText)
                   || isPhoneNumberDeliveryRefusedError(retryRejectText)
                   || isRecoverableAddPhoneSubmitError(retryRejectText)
                 ) {
+                  const retryFailureCode = isPhoneNumberRecentlyUsedCooldownError(retryRejectText)
+                    ? 'phone_recently_used_cooldown'
+                    : (isPhoneNumberUsedError(retryRejectText)
+                      ? 'phone_number_used'
+                      : (isPhoneNumberDeliveryRefusedError(retryRejectText) ? 'phone_delivery_refused' : 'add_phone_rejected'));
                   await rotateActivationAfterAddPhoneFailure(
                     `add-phone keeps rejecting ${activation.phoneNumber} (${retryRejectText})`,
-                    isPhoneNumberUsedError(retryRejectText)
-                      ? 'phone_number_used'
-                      : (isPhoneNumberDeliveryRefusedError(retryRejectText) ? 'phone_delivery_refused' : 'add_phone_rejected'),
+                    retryFailureCode,
                     submitResult || {}
                   );
                   continue;
@@ -8143,6 +8203,15 @@
 
             if (submitResult.invalidCode) {
               const invalidErrorText = String(submitResult.errorText || submitResult.url || 'unknown error');
+              if (isPhoneNumberRecentlyUsedCooldownError(invalidErrorText)) {
+                shouldReplaceNumber = true;
+                replaceReason = 'phone_recently_used_cooldown';
+                await addLog(
+                  `步骤 9：OpenAI 提示号码 ${activation.phoneNumber} 刚被使用，先保留接码订单并更换本轮号码。${invalidErrorText}`,
+                  'warn'
+                );
+                break;
+              }
               if (isPhoneNumberUsedError(invalidErrorText)) {
                 shouldReplaceNumber = true;
                 replaceReason = 'phone_number_used';
@@ -8287,10 +8356,16 @@
             throw buildPhoneReplacementLimitError(maxNumberReplacementAttempts, replaceReason || 'unknown');
           }
 
-          if (shouldReleaseActivationOnReplacement(activation, shouldCancelActivation)) {
+          const shouldPreserveRecentlyUsedActivation = replaceReason === 'phone_recently_used_cooldown';
+          if (shouldPreserveRecentlyUsedActivation) {
+            await addPhoneNumberToCurrentAttemptExclusions(
+              activation?.phoneNumber,
+              'OpenAI 提示号码刚被使用，等待冷却后仍可复用。'
+            );
+          } else if (shouldReleaseActivationOnReplacement(activation, shouldCancelActivation)) {
             await cancelPhoneActivation(state, activation, { forceTerminalStatus: true });
           }
-          if (isFreeAutoReuseActivation(activation)) {
+          if (!shouldPreserveRecentlyUsedActivation && isFreeAutoReuseActivation(activation)) {
             await retireFreeReusableActivation(
               `自动白嫖复用号码 ${activation.phoneNumber} 在失败后被更换。`
             );
