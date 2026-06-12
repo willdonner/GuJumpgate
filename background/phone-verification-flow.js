@@ -125,6 +125,7 @@
     const PHONE_ROUTE_405_RECOVERY_FAILED_ERROR_PREFIX = 'PHONE_ROUTE_405_RECOVERY_FAILED::';
     const PHONE_MANUAL_FREE_REUSE_ERROR_PREFIX = 'PHONE_MANUAL_FREE_REUSE::';
     const PHONE_AUTO_FREE_REUSE_PREPARE_ERROR_PREFIX = 'PHONE_AUTO_FREE_REUSE_PREPARE::';
+    const SMSPOOL_HISTORY_MAX_USES_EXCEEDED_PREFIX = 'SMSPOOL_HISTORY_MAX_USES_EXCEEDED::';
     const FREE_PHONE_REUSE_PREPARE_TIMEOUT_MS = 20000;
     const FREE_PHONE_REUSE_PREPARE_INTERVAL_MS = 2000;
     const FREE_PHONE_REUSE_PREPARE_MAX_ROUNDS = 10;
@@ -695,6 +696,10 @@
         return false;
       }
       return /this\s+phone\s+number\s+was\s+recently\s+used\.?\s+please\s+try\s+again\s+later|phone\s+number\s+was\s+recently\s+used|recently\s+used.*try\s+again\s+later/i.test(text);
+    }
+
+    function isSmsPoolHistoryMaxUsesExceededError(error) {
+      return String(error?.message || error || '').startsWith(SMSPOOL_HISTORY_MAX_USES_EXCEEDED_PREFIX);
     }
 
     function isPhoneNumberInvalidError(value) {
@@ -5259,9 +5264,10 @@
             },
           };
         } catch (error) {
+          const maxUsesExceeded = isSmsPoolHistoryMaxUsesExceededError(error);
           return {
             ok: false,
-            reason: 'reactivate_failed',
+            reason: maxUsesExceeded ? 'max_uses_exceeded' : 'reactivate_failed',
             message: error.message || `${providerLabel} 重新激活失败。`,
           };
         }
@@ -6151,6 +6157,11 @@
         if (prepared.reason === 'activation_cancelled') {
           await retireFreeReusableActivation(
             `自动白嫖复用号码 ${normalizedActivation.phoneNumber} 已被 ${freeProviderLabel} 取消。`
+          );
+        }
+        if (prepared.reason === 'max_uses_exceeded') {
+          await retireFreeReusableActivation(
+            `自动白嫖复用号码 ${normalizedActivation.phoneNumber} 已达到 SMSPool 历史成功次数上限。`
           );
         }
         if (typeof requestStop === 'function') {
