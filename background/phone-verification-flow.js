@@ -1928,6 +1928,27 @@
       return candidates;
     }
 
+    function normalizeActivationCost(record = {}) {
+      const value = record.price
+        ?? record.cost
+        ?? record.Cost
+        ?? record.maxPrice
+        ?? record.selectedPrice;
+      const normalized = normalizeHeroSmsPrice(value);
+      return normalized === null ? null : Math.max(0, Math.round(normalized * 10000) / 10000);
+    }
+
+    function comparePhoneActivationReuseCost(left, right) {
+      const leftCost = normalizeActivationCost(left);
+      const rightCost = normalizeActivationCost(right);
+      const leftHasPaidCost = leftCost !== null && leftCost > 0;
+      const rightHasPaidCost = rightCost !== null && rightCost > 0;
+      if (leftHasPaidCost !== rightHasPaidCost) {
+        return leftHasPaidCost ? -1 : 1;
+      }
+      return 0;
+    }
+
     function normalizeActivation(record) {
       if (!record || typeof record !== 'object' || Array.isArray(record)) {
         return null;
@@ -1954,6 +1975,7 @@
       const rawProvider = String(record.provider || '').trim();
       const provider = normalizePhoneSmsProvider(rawProvider);
       const rawCountryId = record.countryId ?? record.country;
+      const activationCost = normalizeActivationCost(record);
       const fallbackCountryId = provider === PHONE_SMS_PROVIDER_FIVE_SIM ? 'england' : HERO_SMS_COUNTRY_ID;
       const expiresAt = normalizeTimestampMs(record.expiresAt);
       const serviceCode = String(
@@ -1995,6 +2017,7 @@
         maxUses: Math.max(1, Math.floor(Number(record.maxUses) || DEFAULT_PHONE_NUMBER_MAX_USES)),
         ...(expiresAt > 0 ? { expiresAt } : {}),
         ...(statusAction ? { statusAction } : {}),
+        ...(activationCost !== null ? { price: activationCost } : {}),
         ...(record.source ? { source: String(record.source || '').trim() } : {}),
         ...(record.phoneCodeReceived ? { phoneCodeReceived: true } : {}),
         ...(record.phoneCodeReceivedAt ? { phoneCodeReceivedAt: Math.max(0, Number(record.phoneCodeReceivedAt) || 0) } : {}),
@@ -6333,8 +6356,10 @@
       };
       pushReusableCandidate(reusableActivation);
       reusableActivationPool.forEach((candidate) => pushReusableCandidate(candidate));
+      reusableCandidates.sort(comparePhoneActivationReuseCost);
 
-      if (reuseEnabled && supportsPhoneActivationReuseProvider(provider)) {
+      const shouldTryLocalReusableCandidates = provider !== PHONE_SMS_PROVIDER_SMSPOOL;
+      if (reuseEnabled && shouldTryLocalReusableCandidates && supportsPhoneActivationReuseProvider(provider)) {
         for (const candidateActivation of reusableCandidates) {
           if (candidateActivation.provider !== provider) {
             continue;

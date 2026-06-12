@@ -14,7 +14,7 @@
   const ACTIVATION_RETRY_ROUNDS_MIN = 1;
   const ACTIVATION_RETRY_ROUNDS_MAX = 10;
   const DEFAULT_ACTIVATION_RETRY_DELAY_MS = 2000;
-  const DEFAULT_HISTORY_REUSE_CANDIDATE_LIMIT = 12;
+  const DEFAULT_HISTORY_REUSE_CANDIDATE_LIMIT = 3;
   const SMSPOOL_HISTORY_MAX_USES_EXCEEDED_PREFIX = 'SMSPOOL_HISTORY_MAX_USES_EXCEEDED::';
 
   function normalizeCountryId(value, fallback = DEFAULT_COUNTRY_ID) {
@@ -299,6 +299,24 @@
     return Number.isFinite(parsed) ? parsed : 0;
   }
 
+  function normalizeSmsPoolCost(record = {}) {
+    const raw = record.cost
+      ?? record.Cost
+      ?? record.cots
+      ?? record.Cots
+      ?? record.price
+      ?? record.Price
+      ?? record.amount
+      ?? record.Amount;
+    if (raw === undefined || raw === null || raw === '') {
+      return null;
+    }
+    const text = String(raw).trim();
+    const matched = text.match(/-?\d+(?:[.,]\d+)?/);
+    const numeric = matched ? Number(String(matched[0]).replace(',', '.')) : Number(text);
+    return Number.isFinite(numeric) ? Math.max(0, Math.round(numeric * 10000) / 10000) : null;
+  }
+
   function getSmsPoolActivationMaxUses(activation = {}) {
     return Math.max(1, Math.floor(Number(activation?.maxUses) || 3));
   }
@@ -415,6 +433,7 @@
     if (!activationId || !phoneNumber) {
       return null;
     }
+    const activationCost = normalizeSmsPoolCost(record);
     return {
       activationId,
       phoneNumber,
@@ -436,7 +455,7 @@
           )),
         }
         : {}),
-      ...(record.cost !== undefined ? { price: Number(record.cost) } : {}),
+      ...(activationCost !== null ? { price: activationCost } : {}),
       ...(record.pool !== undefined ? { pool: record.pool } : {}),
     };
   }
@@ -768,6 +787,13 @@
           && !excludedPhoneNumbers.some((entry) => phoneNumbersMatch(entry, activation.phoneNumber));
       })
       .sort((left, right) => {
+        const leftCost = normalizeSmsPoolCost(left.record);
+        const rightCost = normalizeSmsPoolCost(right.record);
+        const leftHasPaidCost = leftCost !== null && leftCost > 0;
+        const rightHasPaidCost = rightCost !== null && rightCost > 0;
+        if (leftHasPaidCost !== rightHasPaidCost) {
+          return leftHasPaidCost ? -1 : 1;
+        }
         const rightTime = normalizeSmsPoolTimestamp(right.record);
         const leftTime = normalizeSmsPoolTimestamp(left.record);
         if (rightTime !== leftTime) {
@@ -813,6 +839,7 @@
 
   async function findReusableHistoryActivation(state = {}, options = {}, deps = {}) {
     const candidates = await fetchCompletedHistoryReuseCandidates(state, options, deps);
+    let failedAttempts = 0;
     for (const candidate of candidates) {
       deps.throwIfStopped?.();
       try {
@@ -826,11 +853,18 @@
           successfulUses: Math.max(1, Number(candidate.successfulUses) || 1),
         };
       } catch (error) {
+        failedAttempts += 1;
         await deps.addLog?.(
           `步骤 9：SMSPool 历史号码 ${candidate.phoneNumber} 复用失败，将尝试下一个历史订单或正常取号。${error?.message || error}`,
           'warn'
         );
       }
+    }
+    if (failedAttempts > 0) {
+      await deps.addLog?.(
+        `步骤 9：SMSPool 历史订单复用已尝试 ${failedAttempts} 次未成功，放弃历史复用，继续正常取号。`,
+        'warn'
+      );
     }
     return null;
   }
