@@ -2675,8 +2675,38 @@ header {
 }
 
 .hero-sms-toggle-controls {
-  width: 104px;
+  width: 170px;
   justify-content: flex-start;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.hero-sms-reuse-cost-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  min-height: 24px;
+  font-size: 11px;
+  line-height: 1;
+  color: var(--text-secondary);
+  cursor: pointer;
+  user-select: none;
+}
+
+.hero-sms-reuse-cost-option input {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: var(--blue);
+}
+
+.hero-sms-reuse-cost-option.is-hidden {
+  display: none;
+}
+
+.hero-sms-reuse-cost-option.is-disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .hero-sms-price-preview-result {

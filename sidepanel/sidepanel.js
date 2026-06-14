@@ -557,6 +557,8 @@ const inputPhoneCodePollMaxRounds = document.getElementById('input-phone-code-po
 const inputPhoneActivationRetryRounds = document.getElementById('input-phone-activation-retry-rounds');
 const inputPhoneAutoReleaseOnStopEnabled = document.getElementById('input-phone-auto-release-on-stop-enabled');
 const inputHeroSmsReuseEnabled = document.getElementById('input-hero-sms-reuse-enabled');
+const inputSmsPoolReuseCost012 = document.getElementById('input-sms-pool-reuse-cost-012');
+const inputSmsPoolReuseCost000 = document.getElementById('input-sms-pool-reuse-cost-000');
 const inputFreePhoneReuseEnabled = document.getElementById('input-free-phone-reuse-enabled');
 const inputFreePhoneReuseAutoEnabled = document.getElementById('input-free-phone-reuse-auto-enabled');
 const inputFreeReusablePhone = document.getElementById('input-free-reusable-phone');
@@ -5265,6 +5267,7 @@ function collectSettingsPayload() {
     smsPoolServiceCode: latestState?.smsPoolServiceCode || '671',
     phoneSmsReuseEnabled: phoneSmsReuseEnabledValue,
     heroSmsReuseEnabled: heroSmsReuseEnabledValue,
+    smsPoolReuseCostFilter: getSmsPoolReuseCostFilterFromControls(),
     freePhoneReuseEnabled: freePhoneReuseEnabledValue,
     freePhoneReuseAutoEnabled: freePhoneReuseAutoEnabledValue,
     phoneAutoReleaseOnStopEnabled: phoneAutoReleaseOnStopEnabledValue,
@@ -10057,6 +10060,47 @@ function getStoredPhoneSmsReuseEnabled(state = latestState) {
   );
 }
 
+function normalizeSmsPoolReuseCostFilter(value = null) {
+  if (value === undefined || value === null || value === '') {
+    return ['0.12', '0.00'];
+  }
+  const source = Array.isArray(value)
+    ? value
+    : String(value ?? '')
+      .split(/[\s,，|/]+/)
+      .map((entry) => entry.trim())
+      .filter(Boolean);
+  const normalized = [];
+  source.forEach((entry) => {
+    const text = String(entry || '').trim();
+    const cost = Number(text);
+    const key = Number.isFinite(cost) && Math.abs(cost) < 0.000001
+      ? '0.00'
+      : (Number.isFinite(cost) && Math.abs(cost - 0.12) < 0.000001 ? '0.12' : text);
+    if ((key === '0.12' || key === '0.00') && !normalized.includes(key)) {
+      normalized.push(key);
+    }
+  });
+  return normalized;
+}
+
+function getSmsPoolReuseCostFilterFromControls() {
+  const selected = [];
+  if (inputSmsPoolReuseCost012?.checked) selected.push('0.12');
+  if (inputSmsPoolReuseCost000?.checked) selected.push('0.00');
+  return selected;
+}
+
+function restoreSmsPoolReuseCostFilterControls(state = latestState) {
+  const selected = normalizeSmsPoolReuseCostFilter(state?.smsPoolReuseCostFilter);
+  if (inputSmsPoolReuseCost012) {
+    inputSmsPoolReuseCost012.checked = selected.includes('0.12');
+  }
+  if (inputSmsPoolReuseCost000) {
+    inputSmsPoolReuseCost000.checked = selected.includes('0.00');
+  }
+}
+
 function getStoredFreePhoneReuseEnabled(state = latestState) {
   return Boolean(state?.freePhoneReuseEnabled);
 }
@@ -10074,6 +10118,7 @@ function restorePhoneReuseControlsFromState(state = latestState) {
       ? getStoredPhoneSmsReuseEnabled(state)
       : false;
   }
+  restoreSmsPoolReuseCostFilterControls(state);
   if (typeof inputFreePhoneReuseEnabled !== 'undefined' && inputFreePhoneReuseEnabled) {
     inputFreePhoneReuseEnabled.checked = supportsFreeReuse
       ? getStoredFreePhoneReuseEnabled(state)
@@ -10116,6 +10161,14 @@ function enforcePhoneSmsReuseLockState(provider = getSelectedPhoneSmsProvider())
     }
     inputHeroSmsReuseEnabled.disabled = inputHeroSmsReuseEnabled.disabled || providerReuseLocked || phoneSignupReuseLocked;
   }
+  [inputSmsPoolReuseCost012, inputSmsPoolReuseCost000].forEach((input) => {
+    if (!input) return;
+    const label = input.closest?.('.hero-sms-reuse-cost-option');
+    const hidden = normalizedProvider !== PHONE_SMS_PROVIDER_SMSPOOL;
+    input.disabled = hidden || providerReuseLocked || phoneSignupReuseLocked || !Boolean(inputHeroSmsReuseEnabled?.checked);
+    label?.classList.toggle('is-hidden', hidden);
+    label?.classList.toggle('is-disabled', input.disabled);
+  });
   return providerReuseLocked || phoneSignupReuseLocked;
 }
 
@@ -10724,6 +10777,18 @@ function updatePhoneVerificationSettingsUI() {
   if (typeof inputHeroSmsReuseEnabled !== 'undefined' && inputHeroSmsReuseEnabled) {
     inputHeroSmsReuseEnabled.disabled = settingsLocked || phoneSignupReuseLocked || providerActivationReuseLocked;
   }
+  [inputSmsPoolReuseCost012, inputSmsPoolReuseCost000].forEach((input) => {
+    if (!input) return;
+    const label = input.closest?.('.hero-sms-reuse-cost-option');
+    const hidden = provider !== PHONE_SMS_PROVIDER_SMSPOOL;
+    input.disabled = settingsLocked
+      || hidden
+      || phoneSignupReuseLocked
+      || providerActivationReuseLocked
+      || !Boolean(inputHeroSmsReuseEnabled?.checked);
+    label?.classList.toggle('is-hidden', hidden);
+    label?.classList.toggle('is-disabled', input.disabled);
+  });
   if (typeof inputPhoneAutoReleaseOnStopEnabled !== 'undefined' && inputPhoneAutoReleaseOnStopEnabled) {
     inputPhoneAutoReleaseOnStopEnabled.disabled = settingsLocked;
   }
@@ -12394,6 +12459,7 @@ function applySettingsState(state) {
         state?.heroSmsReuseEnabled
       );
   }
+  restoreSmsPoolReuseCostFilterControls(state);
   if (typeof inputFreePhoneReuseEnabled !== 'undefined' && inputFreePhoneReuseEnabled) {
     inputFreePhoneReuseEnabled.checked = Boolean(state?.freePhoneReuseEnabled);
   }
@@ -18560,8 +18626,20 @@ inputHeroSmsReuseEnabled?.addEventListener('change', () => {
     saveSettings({ silent: true }).catch(() => { });
     return;
   }
+  updatePhoneVerificationSettingsUI();
   markSettingsDirty(true);
   saveSettings({ silent: true }).catch(() => { });
+});
+
+[inputSmsPoolReuseCost012, inputSmsPoolReuseCost000].forEach((input) => {
+  input?.addEventListener('change', () => {
+    const selected = getSmsPoolReuseCostFilterFromControls();
+    if (inputSmsPoolReuseCost012) inputSmsPoolReuseCost012.checked = selected.includes('0.12');
+    if (inputSmsPoolReuseCost000) inputSmsPoolReuseCost000.checked = selected.includes('0.00');
+    updatePhoneVerificationSettingsUI();
+    markSettingsDirty(true);
+    saveSettings({ silent: true }).catch(() => { });
+  });
 });
 
 inputFreePhoneReuseEnabled?.addEventListener('change', () => {
@@ -19777,6 +19855,13 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
             message.payload.heroSmsReuseEnabled
           );
         enforcePhoneSmsReuseLockState();
+        updatePhoneVerificationSettingsUI();
+      }
+      if (message.payload.smsPoolReuseCostFilter !== undefined) {
+        restoreSmsPoolReuseCostFilterControls({
+          ...latestState,
+          smsPoolReuseCostFilter: message.payload.smsPoolReuseCostFilter,
+        });
         updatePhoneVerificationSettingsUI();
       }
       if (message.payload.freePhoneReuseEnabled !== undefined && inputFreePhoneReuseEnabled) {

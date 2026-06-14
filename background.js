@@ -1181,6 +1181,7 @@ const PERSISTED_SETTING_DEFAULTS = {
   phoneSignupReloginAfterBindEmailEnabled: false,
   phoneAutoReleaseOnStopEnabled: true,
   phoneSmsReuseEnabled: DEFAULT_HERO_SMS_REUSE_ENABLED,
+  smsPoolReuseCostFilter: ['0.12', '0.00'],
   freePhoneReuseEnabled: true,
   freePhoneReuseAutoEnabled: true,
   signupMethod: DEFAULT_SIGNUP_METHOD,
@@ -4306,6 +4307,28 @@ function normalizePersistentSettingValue(key, value) {
     case 'smsPoolMaxPrice':
     case 'smsPoolPreferredPrice':
       return normalizeHeroSmsMaxPrice(value);
+    case 'smsPoolReuseCostFilter': {
+      if (value === undefined || value === null || value === '') {
+        return ['0.12', '0.00'];
+      }
+      const source = Array.isArray(value)
+        ? value
+        : String(value ?? '')
+          .split(/[\s,，|/]+/)
+          .map((entry) => entry.trim())
+          .filter(Boolean);
+      const normalized = [];
+      source.forEach((entry) => {
+        const numeric = Number(entry);
+        const keyValue = Number.isFinite(numeric) && Math.abs(numeric) < 0.000001
+          ? '0.00'
+          : (Number.isFinite(numeric) && Math.abs(numeric - 0.12) < 0.000001 ? '0.12' : String(entry || '').trim());
+        if ((keyValue === '0.12' || keyValue === '0.00') && !normalized.includes(keyValue)) {
+          normalized.push(keyValue);
+        }
+      });
+      return normalized;
+    }
     case 'phonePreferredActivation':
       return normalizePhonePreferredActivation(value);
     default:
