@@ -259,7 +259,22 @@
       if (!text) {
         return false;
       }
+      if (isStep9PhoneReplacementLimitFailure(text)) {
+        return false;
+      }
       return /no\s+numbers\s+available\s+across|all provider candidates failed to acquire number|no\s+free\s+phones|numbers?\s+not\s+found|no\s+numbers\s+within\s+maxprice|countries\s+are\s+empty|均无可用号码|暂无可用号码|无可用号码|接码号池暂无|\bNO_NUMBERS\b/i.test(text);
+    }
+
+    function isStep9PhoneReplacementLimitFailure(error) {
+      const text = String(
+        typeof getErrorMessage === 'function'
+          ? getErrorMessage(error)
+          : (error?.message || error || '')
+      ).trim();
+      if (!text) {
+        return false;
+      }
+      return /步骤\s*9[：:]\s*更换\s*\d+\s*次号码后手机号验证仍未成功|phone\s+verification\s+did\s+not\s+succeed\s+after\s+\d+\s+number\s+replacements/i.test(text);
     }
 
     async function logAutoRunFinalSummary(totalRuns, roundSummaries = []) {
@@ -698,9 +713,13 @@
             roundSummary.failureReasons.push(reason);
             const blockedByPhoneSmsRateLimit = typeof isPhoneSmsPlatformRateLimitFailure === 'function'
               && isPhoneSmsPlatformRateLimitFailure(err);
+            const blockedByStep9PhoneReplacementLimit = !blockedByPhoneSmsRateLimit
+              && isStep9PhoneReplacementLimitFailure(err);
             const blockedByPhoneNoSupply = !blockedByPhoneSmsRateLimit
+              && !blockedByStep9PhoneReplacementLimit
               && isPhoneNumberSupplyExhaustedFailure(err);
             const blockedByAddPhone = !blockedByPhoneSmsRateLimit
+              && !blockedByStep9PhoneReplacementLimit
               && !blockedByPhoneNoSupply
               && typeof isAddPhoneAuthFailure === 'function'
               && isAddPhoneAuthFailure(err);
@@ -954,6 +973,26 @@
               attemptRun += 1;
               reuseExistingProgress = false;
               continue;
+            }
+
+            if (blockedByStep9PhoneReplacementLimit) {
+              roundSummary.status = 'failed';
+              roundSummary.finalFailureReason = reason;
+              await setState({
+                autoRunRoundSummaries: serializeAutoRunRoundSummaries(totalRuns, roundSummaries),
+              });
+              await appendRoundRecordIfNeeded('failed', reason, err);
+              cancelPendingCommands('当前轮因步骤 9 换号达到上限已终止。');
+              await broadcastStopToContentScripts();
+              await addLog(`第 ${targetRun}/${totalRuns} 轮步骤 9 换号达到上限：${reason}`, 'warn');
+              await addLog(
+                targetRun < totalRuns
+                  ? `第 ${targetRun}/${totalRuns} 轮因步骤 9 换号达到上限提前结束，自动流程将继续下一轮。`
+                  : `第 ${targetRun}/${totalRuns} 轮因步骤 9 换号达到上限提前结束，已无后续轮次，本次自动运行结束。`,
+                'warn'
+              );
+              forceFreshTabsNextRun = true;
+              break;
             }
 
             if (blockedByAddPhone) {

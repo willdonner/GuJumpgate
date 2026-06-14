@@ -1400,6 +1400,8 @@
         phone_max_usage_exceeded: '手机号达到使用上限',
         phone_verification_too_many_requests: '手机号验证请求过多',
         resend_server_error: '重发短信后进入服务器错误页',
+        whatsapp_add_phone_channel: '添加手机号页切换为 WhatsApp 通道',
+        whatsapp_verification_channel: '手机验证码页切换为 WhatsApp 通道',
         whatsapp_resend_channel: '页面重发入口切换为 WhatsApp 通道',
         unknown: '未知',
       };
