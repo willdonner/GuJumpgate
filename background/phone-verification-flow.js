@@ -998,6 +998,29 @@
       return normalizeHeroSmsReuseEnabled(state?.heroSmsReuseEnabled);
     }
 
+    function normalizeSmsPoolReuseCostFilter(value = null) {
+      if (value === undefined || value === null || value === '') {
+        return ['0.12', '0.00'];
+      }
+      const source = Array.isArray(value)
+        ? value
+        : String(value ?? '')
+          .split(/[\s,，|/]+/)
+          .map((entry) => entry.trim())
+          .filter(Boolean);
+      const normalized = [];
+      source.forEach((entry) => {
+        const numeric = Number(entry);
+        const key = Number.isFinite(numeric) && Math.abs(numeric) < 0.000001
+          ? '0.00'
+          : (Number.isFinite(numeric) && Math.abs(numeric - 0.12) < 0.000001 ? '0.12' : String(entry || '').trim());
+        if ((key === '0.12' || key === '0.00') && !normalized.includes(key)) {
+          normalized.push(key);
+        }
+      });
+      return normalized;
+    }
+
     function normalizeFreePhoneReuseEnabled(value) {
       return Boolean(value);
     }
@@ -2237,6 +2260,27 @@
       return normalizedPrice === null || normalizedPrice <= 0
         ? null
         : Math.round(normalizedPrice * 10000) / 10000;
+    }
+
+    function isProtectedSmsPoolPaidReuseActivation(state = {}, activation) {
+      if (!normalizePhoneSmsReuseEnabled(state)) {
+        return false;
+      }
+      const normalizedActivation = normalizeActivation(activation);
+      if (!normalizedActivation || normalizedActivation.provider !== PHONE_SMS_PROVIDER_SMSPOOL) {
+        return false;
+      }
+      const selectedBuckets = normalizeSmsPoolReuseCostFilter(state?.smsPoolReuseCostFilter);
+      if (!selectedBuckets.includes('0.12')) {
+        return false;
+      }
+      const activationCost = normalizeHeroSmsPrice(
+        normalizedActivation.price
+        ?? activation?.price
+        ?? activation?.cost
+        ?? getActivationAcquiredPriceHint(normalizedActivation)
+      );
+      return activationCost !== null && Math.abs(activationCost - 0.12) < 0.000001;
     }
 
     function forgetActivationAcquiredPriceHint(activation) {
@@ -5107,6 +5151,14 @@
     async function cancelPhoneActivation(state = {}, activation, options = {}) {
       try {
         const normalizedActivation = normalizeActivation(activation);
+        if (isProtectedSmsPoolPaidReuseActivation(state, normalizedActivation)) {
+          const identifier = normalizedActivation?.phoneNumber || normalizedActivation?.activationId || 'current activation';
+          await addLog(
+            `步骤 9：SMSPool 0.12 复用号码 ${identifier} 已受保护，跳过主动释放。`,
+            'info'
+          );
+          return;
+        }
         const forceTerminalStatus = options?.forceTerminalStatus === true;
         if (!forceTerminalStatus && shouldSkipTerminalStatusForFreeReuse(state, activation)) {
           const identifier = normalizedActivation?.phoneNumber || normalizedActivation?.activationId || 'current activation';
@@ -5140,6 +5192,15 @@
     }
 
     async function discardPhoneActivationFromReuse(reason = '', activation = null, state = {}) {
+      if (isProtectedSmsPoolPaidReuseActivation(state, activation)) {
+        const protectedActivation = normalizeActivation(activation);
+        const identifier = protectedActivation?.phoneNumber || protectedActivation?.activationId || '当前接码订单';
+        await addLog(
+          `步骤 9：SMSPool 0.12 复用号码 ${identifier} 已受保护，跳过从复用记录移除。${reason || ''}`.trim(),
+          'info'
+        );
+        return;
+      }
       const rejectedPhoneNumber = String(activation?.phoneNumber || '').trim();
       if (!rejectedPhoneNumber) {
         return;
@@ -5188,9 +5249,17 @@
 
     async function banPhoneActivation(state = {}, activation, options = {}) {
       try {
+        const normalizedActivation = normalizeActivation(activation);
+        if (isProtectedSmsPoolPaidReuseActivation(state, normalizedActivation)) {
+          const identifier = normalizedActivation?.phoneNumber || normalizedActivation?.activationId || 'current activation';
+          await addLog(
+            `步骤 9：SMSPool 0.12 复用号码 ${identifier} 已受保护，跳过主动封禁/释放。`,
+            'info'
+          );
+          return;
+        }
         const forceTerminalStatus = options?.forceTerminalStatus === true;
         if (!forceTerminalStatus && shouldSkipTerminalStatusForFreeReuse(state, activation)) {
-          const normalizedActivation = normalizeActivation(activation);
           const identifier = normalizedActivation?.phoneNumber || normalizedActivation?.activationId || 'current activation';
           await addLog(
             `步骤 9：白嫖复用模式仅请求短信，跳过 ${identifier} 的接码封禁状态。`,
@@ -6105,6 +6174,13 @@
         return [];
       }
       const state = options?.state || await getState();
+      if (isProtectedSmsPoolPaidReuseActivation(state, normalized)) {
+        await addLog(
+          `步骤 9：SMSPool 0.12 复用号码 ${normalized.phoneNumber || normalized.activationId} 已受保护，跳过从复用池移除。`,
+          'info'
+        );
+        return readReusableActivationPoolFromState(state);
+      }
       const existingPool = readReusableActivationPoolFromState(state);
       const nextPool = existingPool.filter((entry) => !isSameActivation(entry, normalized));
       if (nextPool.length === existingPool.length) {
