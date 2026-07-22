@@ -3602,14 +3602,36 @@ function isSignupPasswordPage() {
 }
 
 function getSignupPasswordInput() {
-  const candidates = document.querySelectorAll([
+  const selector = [
     'input[type="password"]',
     'input[name*="password" i]',
     'input[autocomplete="new-password"]',
     'input[autocomplete="current-password"]',
     'input[aria-label*="password" i]',
-  ].join(', '));
-  return Array.from(candidates).find((input) => isVisibleElement(input)) || null;
+  ].join(', ');
+  const roots = [document];
+  const visitedRoots = new Set();
+  const seenInputs = new Set();
+  const candidates = [];
+
+  while (roots.length) {
+    const root = roots.pop();
+    if (!root || visitedRoots.has(root)) continue;
+    visitedRoots.add(root);
+
+    Array.from(root.querySelectorAll(selector)).forEach((input) => {
+      if (!seenInputs.has(input)) {
+        seenInputs.add(input);
+        candidates.push(input);
+      }
+    });
+
+    Array.from(root.querySelectorAll('*')).forEach((element) => {
+      if (element.shadowRoot) roots.push(element.shadowRoot);
+    });
+  }
+
+  return candidates.find((input) => isVisibleElement(input)) || null;
 }
 
 function getSignupPasswordSubmitButton({ allowDisabled = false } = {}) {
