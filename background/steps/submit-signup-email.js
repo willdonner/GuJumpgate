@@ -501,6 +501,7 @@
 
       const landingResult = await ensureSignupPostEmailPageReadyInTab(signupTabId, 2, {
         skipUrlWait: Boolean(step2Result?.alreadyOnPasswordPage),
+        allowInlinePasswordPage: true,
       });
 
       await completeNodeFromBackground('submit-signup-email', {

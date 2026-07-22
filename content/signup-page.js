@@ -650,14 +650,17 @@ function findSignupMoreOptionsTrigger() {
 }
 
 function getSignupEmailContinueButton({ allowDisabled = false } = {}) {
-  const direct = document.querySelector('button[type="submit"], input[type="submit"]');
-  if (direct && isVisibleElement(direct) && (allowDisabled || isActionEnabled(direct))) {
-    return direct;
-  }
-
   const candidates = document.querySelectorAll(
     'button, a, [role="button"], [role="link"], input[type="button"], input[type="submit"]'
   );
+  const primaryActionPattern = /^(?:continue|next|submit|\u7ee7\u7eed|\u4e0b\u4e00\u6b65|\u63d0\u4ea4)(?:\s+(?:continue|next|submit|\u7ee7\u7eed|\u4e0b\u4e00\u6b65|\u63d0\u4ea4))*\s*$/i;
+  const primaryAction = Array.from(candidates).find((el) => {
+    if (!isVisibleElement(el) || (!allowDisabled && !isActionEnabled(el))) return false;
+    return primaryActionPattern.test(getActionText(el));
+  });
+  if (primaryAction) {
+    return primaryAction;
+  }
   return Array.from(candidates).find((el) => {
     if (!isVisibleElement(el) || (!allowDisabled && !isActionEnabled(el))) return false;
     return /continue|next|submit|继续|下一步/i.test(getActionText(el));
@@ -1342,7 +1345,7 @@ async function fillSignupEmailAndContinue(email, step) {
   });
   log(`步骤 ${step}：邮箱已填写`);
 
-  const continueButton = snapshot.continueButton || getSignupEmailContinueButton({ allowDisabled: true });
+  const continueButton = getSignupEmailContinueButton({ allowDisabled: true });
   if (!continueButton || !isActionEnabled(continueButton)) {
     throw new Error(`步骤 ${step}：未找到可点击的“继续”按钮。URL: ${location.href}`);
   }
@@ -3588,7 +3591,14 @@ function getStep5ErrorText() {
 
 
 function isSignupPasswordPage() {
-  return /\/(?:create-account|log-in)\/password(?:[/?#]|$)/i.test(location.pathname || '');
+  const pathname = location.pathname || '';
+  if (/\/(?:create-account|log-in)\/password(?:[/?#]|$)/i.test(pathname)) {
+    return true;
+  }
+  const hostname = String(location.hostname || '').toLowerCase();
+  return ['chatgpt.com', 'www.chatgpt.com', 'chat.openai.com'].includes(hostname)
+    && /^\/?$/.test(pathname)
+    && Boolean(getSignupPasswordInput());
 }
 
 function getSignupPasswordInput() {

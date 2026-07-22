@@ -139,11 +139,33 @@
     }
 
     async function ensureSignupPostIdentityPageReadyInTab(tabId, step = 2, options = {}) {
-      const { skipUrlWait = false } = options;
+      const { skipUrlWait = false, allowInlinePasswordPage = false } = options;
       let landingUrl = '';
       let landingState = '';
 
-      if (!skipUrlWait) {
+      if (!skipUrlWait && allowInlinePasswordPage) {
+        try {
+          const inlinePasswordResult = await sendToContentScriptResilient('signup-page', {
+            type: 'ENSURE_SIGNUP_PASSWORD_PAGE_READY',
+            step,
+            source: 'background',
+            payload: {},
+          }, {
+            timeoutMs: 25000,
+            retryDelayMs: 700,
+            logMessage: `步骤 ${step}：正在确认注册弹窗是否已原地进入密码页...`,
+          });
+          if (inlinePasswordResult?.ready && inlinePasswordResult?.state === 'password_page') {
+            const currentTab = await chrome.tabs.get(tabId).catch(() => null);
+            landingUrl = inlinePasswordResult?.url || currentTab?.url || '';
+            landingState = 'password_page';
+          }
+        } catch (_) {
+          // Fall through to the legacy URL-based transition check.
+        }
+      }
+
+      if (!skipUrlWait && !landingState) {
         const matchedTab = await waitForTabUrlMatch(tabId, (url) => Boolean(resolveSignupPostIdentityState(url)), {
           timeoutMs: 45000,
           retryDelayMs: 300,
