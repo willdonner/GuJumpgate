@@ -3602,8 +3602,14 @@ function isSignupPasswordPage() {
 }
 
 function getSignupPasswordInput() {
-  const input = document.querySelector('input[type="password"]');
-  return input && isVisibleElement(input) ? input : null;
+  const candidates = document.querySelectorAll([
+    'input[type="password"]',
+    'input[name*="password" i]',
+    'input[autocomplete="new-password"]',
+    'input[autocomplete="current-password"]',
+    'input[aria-label*="password" i]',
+  ].join(', '));
+  return Array.from(candidates).find((input) => isVisibleElement(input)) || null;
 }
 
 function getSignupPasswordSubmitButton({ allowDisabled = false } = {}) {
