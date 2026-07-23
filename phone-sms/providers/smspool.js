@@ -346,7 +346,7 @@
 
   function normalizeSmsPoolReuseCostFilter(value = null) {
     if (value === undefined || value === null || value === '') {
-      return ['0.12', '0.00'];
+      return ['0.14', '0.00'];
     }
     const source = Array.isArray(value)
       ? value
@@ -359,8 +359,8 @@
       const numeric = Number(entry);
       const key = Number.isFinite(numeric) && Math.abs(numeric) < 0.000001
         ? '0.00'
-        : (Number.isFinite(numeric) && Math.abs(numeric - 0.12) < 0.000001 ? '0.12' : String(entry || '').trim());
-      if ((key === '0.12' || key === '0.00') && !normalized.includes(key)) {
+        : (Number.isFinite(numeric) && (Math.abs(numeric - 0.12) < 0.000001 || Math.abs(numeric - 0.14) < 0.000001) ? '0.14' : String(entry || '').trim());
+      if ((key === '0.14' || key === '0.00') && !normalized.includes(key)) {
         normalized.push(key);
       }
     });
@@ -375,7 +375,9 @@
     if (cost <= 0) {
       return '0.00';
     }
-    return Math.abs(cost - 0.12) < 0.000001 ? '0.12' : '';
+    return Math.abs(cost - 0.12) < 0.000001 || Math.abs(cost - 0.14) < 0.000001
+      ? '0.14'
+      : '';
   }
 
   function getSmsPoolActivationMaxUses(activation = {}) {
