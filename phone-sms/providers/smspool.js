@@ -14,7 +14,6 @@
   const ACTIVATION_RETRY_ROUNDS_MIN = 1;
   const ACTIVATION_RETRY_ROUNDS_MAX = 10;
   const DEFAULT_ACTIVATION_RETRY_DELAY_MS = 2000;
-  const DEFAULT_HISTORY_REUSE_FAILURE_LIMIT = 3;
   const SMSPOOL_HISTORY_MAX_USES_EXCEEDED_PREFIX = 'SMSPOOL_HISTORY_MAX_USES_EXCEEDED::';
 
   function normalizeCountryId(value, fallback = DEFAULT_COUNTRY_ID) {
@@ -1081,9 +1080,6 @@
           `步骤 9：SMSPool 历史号码 ${candidate.phoneNumber} 复用失败，将尝试下一个历史订单或正常取号。${error?.message || error}`,
           'warn'
         );
-        if (failedAttempts >= DEFAULT_HISTORY_REUSE_FAILURE_LIMIT) {
-          break;
-        }
       }
     }
     if (failedAttempts > 0) {
