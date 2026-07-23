@@ -10591,8 +10591,7 @@ function updatePhoneVerificationSettingsUI() {
   const canShowPhoneSettings = capabilityState
     ? Boolean(capabilityState.canShowPhoneSettings)
     : true;
-  const enabled = canShowPhoneSettings && rawEnabled;
-  const showSettings = enabled && phoneVerificationSectionExpanded;
+  const showSettings = canShowPhoneSettings && phoneVerificationSectionExpanded;
   const selectedSignupMethodForPhoneSettings = typeof getSelectedSignupMethod === 'function'
     ? getSelectedSignupMethod()
     : normalizeSignupMethod(latestState?.signupMethod || DEFAULT_SIGNUP_METHOD);
@@ -10641,11 +10640,11 @@ function updatePhoneVerificationSettingsUI() {
   }
   updateSignupMethodUI();
   if (btnTogglePhoneVerificationSection) {
-    btnTogglePhoneVerificationSection.disabled = !enabled;
+    btnTogglePhoneVerificationSection.disabled = !canShowPhoneSettings;
     btnTogglePhoneVerificationSection.textContent = showSettings ? '收起设置' : '展开设置';
-    btnTogglePhoneVerificationSection.title = enabled
+    btnTogglePhoneVerificationSection.title = canShowPhoneSettings
       ? (showSettings ? '收起接码设置' : '展开接码设置')
-      : '开启接码后可展开设置';
+      : '当前模式不支持接码设置';
     btnTogglePhoneVerificationSection.setAttribute('aria-expanded', String(showSettings));
   }
   if (rowPhoneVerificationFold) {
