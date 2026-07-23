@@ -1230,6 +1230,13 @@
       return historyActivation;
     }
 
+    if (options?.reuseOnly === true) {
+      const requestedBuckets = normalizeSmsPoolReuseCostFilter(options.reuseCostFilter);
+      throw new Error(
+        `SMSPool ${requestedBuckets.join(' / ') || '指定'} 复用池暂无可用号码，不会购买新号码。`
+      );
+    }
+
     for (let round = 1; round <= maxRounds; round += 1) {
       try {
         const payload = await postForm(config, '/purchase/sms', {

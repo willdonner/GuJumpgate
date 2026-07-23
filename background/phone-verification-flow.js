@@ -6561,6 +6561,11 @@
           && providerCandidate === PHONE_SMS_PROVIDER_SMSPOOL
           && options?.skipSmsPoolReuse === true
         );
+        const useSmsPoolReplacementReuseOnly = (
+          providerCandidate === provider
+          && providerCandidate === PHONE_SMS_PROVIDER_SMSPOOL
+          && options?.smsPoolReuseOnly === true
+        );
         try {
           let activation = null;
           while (skippedExcludedNumbers < excludedRetryBudget) {
@@ -6574,6 +6579,7 @@
                   ? { reuseCostFilter: useSmsPoolReplacementReuseCostFilter }
                   : {}),
                 ...(skipSmsPoolReuse ? { skipSmsPoolReuse: true } : {}),
+                ...(useSmsPoolReplacementReuseOnly ? { reuseOnly: true } : {}),
               }
             );
             if (!isExcludedPhoneNumber(activation?.phoneNumber)) {
@@ -6608,6 +6614,9 @@
           return activation;
         } catch (error) {
           if (isStopRequestedError(error)) {
+            throw error;
+          }
+          if (useSmsPoolReplacementReuseOnly) {
             throw error;
           }
           const providerErrorMessage = String(error?.message || error || 'unknown error');
@@ -8040,10 +8049,10 @@
           cost !== null
           && (Math.abs(cost - 0.12) < 0.000001 || Math.abs(cost - 0.14) < 0.000001)
         ) {
-          return { smsPoolReuseCostFilter: ['0.14'] };
+          return { smsPoolReuseCostFilter: ['0.14'], smsPoolReuseOnly: true };
         }
         if (cost !== null && cost <= 0) {
-          return { smsPoolReuseCostFilter: ['0.00'] };
+          return { smsPoolReuseCostFilter: ['0.00'], smsPoolReuseOnly: true };
         }
         return { skipSmsPoolReuse: true };
       };
