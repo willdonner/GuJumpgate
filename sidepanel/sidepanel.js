@@ -10591,6 +10591,7 @@ function updatePhoneVerificationSettingsUI() {
   const canShowPhoneSettings = capabilityState
     ? Boolean(capabilityState.canShowPhoneSettings)
     : true;
+  const enabled = canShowPhoneSettings && rawEnabled;
   const showSettings = canShowPhoneSettings && phoneVerificationSectionExpanded;
   const selectedSignupMethodForPhoneSettings = typeof getSelectedSignupMethod === 'function'
     ? getSelectedSignupMethod()
