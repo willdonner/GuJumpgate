@@ -895,16 +895,20 @@
       })
       .filter(Boolean)
       .filter(({ record, activation, usageStat }) => {
+        const isEligible = isCompletedSmsPoolHistoryOrder(record)
+          && isConfiguredSmsPoolServiceOrder(record, state)
+          && isConfiguredSmsPoolCountryOrder(record, state)
+          && allowedCostBuckets.includes(getSmsPoolReuseCostBucket(record))
+          && !excludedPhoneNumbers.some((entry) => phoneNumbersMatch(entry, activation.phoneNumber));
+        if (!isEligible) {
+          return false;
+        }
         const key = `${activation.activationId}::${activation.phoneNumber}`;
         if (seen.has(key)) {
           return false;
         }
         seen.add(key);
-        return isCompletedSmsPoolHistoryOrder(record)
-          && isConfiguredSmsPoolServiceOrder(record, state)
-          && isConfiguredSmsPoolCountryOrder(record, state)
-          && allowedCostBuckets.includes(getSmsPoolReuseCostBucket(record))
-          && !excludedPhoneNumbers.some((entry) => phoneNumbersMatch(entry, activation.phoneNumber));
+        return true;
       })
       .sort((left, right) => {
         const leftCost = normalizeSmsPoolCost(left.record);
@@ -972,16 +976,20 @@
       })
       .filter(Boolean)
       .filter(({ activation, record }) => {
+        const isEligible = isReusableSmsPoolActiveOrder(record)
+          && isConfiguredSmsPoolActiveServiceOrder(record, state)
+          && isConfiguredSmsPoolCountryOrder(record, state)
+          && allowedCostBuckets.includes(getSmsPoolReuseCostBucket(record))
+          && !excludedPhoneNumbers.some((entry) => phoneNumbersMatch(entry, activation.phoneNumber));
+        if (!isEligible) {
+          return false;
+        }
         const key = `${activation.activationId}::${activation.phoneNumber}`;
         if (seen.has(key)) {
           return false;
         }
         seen.add(key);
-        return isReusableSmsPoolActiveOrder(record)
-          && isConfiguredSmsPoolActiveServiceOrder(record, state)
-          && isConfiguredSmsPoolCountryOrder(record, state)
-          && allowedCostBuckets.includes(getSmsPoolReuseCostBucket(record))
-          && !excludedPhoneNumbers.some((entry) => phoneNumbersMatch(entry, activation.phoneNumber));
+        return true;
       })
       .sort((left, right) => {
         const rightTime = normalizeSmsPoolTimestamp(right.record);
