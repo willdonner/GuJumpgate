@@ -851,7 +851,11 @@
   }
 
   async function fetchCompletedHistoryReuseCandidates(state = {}, options = {}, deps = {}) {
-    if (!normalizePhoneSmsReuseEnabled(state) || options?.skipSmsPoolHistoryReuse === true) {
+    if (
+      !normalizePhoneSmsReuseEnabled(state)
+      || options?.skipSmsPoolReuse === true
+      || options?.skipSmsPoolHistoryReuse === true
+    ) {
       return [];
     }
     const config = resolveConfig(state, deps);
@@ -868,7 +872,9 @@
     const historyRecords = collectSmsPoolHistoryOrders(payload);
     const usageStatsByPhone = buildSmsPoolHistoryUsageStats(historyRecords, state);
     const excludedPhoneNumbers = normalizeExcludedPhoneNumbers(options?.excludedPhoneNumbers);
-    const allowedCostBuckets = normalizeSmsPoolReuseCostFilter(state.smsPoolReuseCostFilter);
+    const allowedCostBuckets = options?.reuseCostFilter !== undefined
+      ? normalizeSmsPoolReuseCostFilter(options.reuseCostFilter)
+      : normalizeSmsPoolReuseCostFilter(state.smsPoolReuseCostFilter);
     const seen = new Set();
     const skippedMaxUsePhones = new Set();
     const candidates = historyRecords
@@ -932,7 +938,7 @@
   }
 
   async function fetchActiveReuseCandidates(state = {}, options = {}, deps = {}) {
-    if (!normalizePhoneSmsReuseEnabled(state)) {
+    if (!normalizePhoneSmsReuseEnabled(state) || options?.skipSmsPoolReuse === true) {
       return [];
     }
     const config = resolveConfig(state, deps);
@@ -948,7 +954,9 @@
 
     const activeRecords = collectSmsPoolHistoryOrders(payload);
     const excludedPhoneNumbers = normalizeExcludedPhoneNumbers(options?.excludedPhoneNumbers);
-    const allowedCostBuckets = normalizeSmsPoolReuseCostFilter(state.smsPoolReuseCostFilter);
+    const allowedCostBuckets = options?.reuseCostFilter !== undefined
+      ? normalizeSmsPoolReuseCostFilter(options.reuseCostFilter)
+      : normalizeSmsPoolReuseCostFilter(state.smsPoolReuseCostFilter);
     const seen = new Set();
     const candidates = activeRecords
       .map((record, index) => {

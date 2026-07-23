@@ -6549,6 +6549,18 @@
         )
           ? options.countryPriceFloorByCountryId
           : {};
+        const useSmsPoolReplacementReuseCostFilter = (
+          providerCandidate === provider
+          && providerCandidate === PHONE_SMS_PROVIDER_SMSPOOL
+          && Array.isArray(options?.smsPoolReuseCostFilter)
+        )
+          ? normalizeSmsPoolReuseCostFilter(options.smsPoolReuseCostFilter)
+          : [];
+        const skipSmsPoolReuse = (
+          providerCandidate === provider
+          && providerCandidate === PHONE_SMS_PROVIDER_SMSPOOL
+          && options?.skipSmsPoolReuse === true
+        );
         try {
           let activation = null;
           while (skippedExcludedNumbers < excludedRetryBudget) {
@@ -6558,6 +6570,10 @@
                 blockedCountryIds: useBlockedCountryIds,
                 countryPriceFloorByCountryId: useCountryPriceFloorByCountryId,
                 excludedPhoneNumbers,
+                ...(useSmsPoolReplacementReuseCostFilter.length
+                  ? { reuseCostFilter: useSmsPoolReplacementReuseCostFilter }
+                  : {}),
+                ...(skipSmsPoolReuse ? { skipSmsPoolReuse: true } : {}),
               }
             );
             if (!isExcludedPhoneNumber(activation?.phoneNumber)) {
@@ -7741,6 +7757,7 @@
       );
       let usedNumberReplacementAttempts = 0;
       let preferredActivationExhausted = false;
+      let replacementSmsPoolReuseOptions = null;
       let preferReuseExistingActivationOnAddPhone = false;
       let addPhoneReentryWithSameActivation = 0;
       const countrySmsFailureCounts = new Map();
@@ -8013,6 +8030,24 @@
         )
       );
 
+      const getSmsPoolReplacementReuseOptions = (activationCandidate) => {
+        const normalizedActivation = normalizeActivation(activationCandidate);
+        if (normalizedActivation?.provider !== PHONE_SMS_PROVIDER_SMSPOOL) {
+          return null;
+        }
+        const cost = normalizeActivationCost(normalizedActivation);
+        if (
+          cost !== null
+          && (Math.abs(cost - 0.12) < 0.000001 || Math.abs(cost - 0.14) < 0.000001)
+        ) {
+          return { smsPoolReuseCostFilter: ['0.14'] };
+        }
+        if (cost !== null && cost <= 0) {
+          return { smsPoolReuseCostFilter: ['0.00'] };
+        }
+        return { skipSmsPoolReuse: true };
+      };
+
       const markPreferredActivationExhausted = async (reason = '') => {
         if (preferredActivationExhausted || !activation || !isPreferredActivation(activation, state)) {
           return;
@@ -8025,6 +8060,7 @@
       };
 
       const rotateActivationAfterAddPhoneFailure = async (failureReason, failureCode, submitState = {}) => {
+        replacementSmsPoolReuseOptions = getSmsPoolReplacementReuseOptions(activation);
         const preserveActivation = isPhoneNumberRecentlyUsedCooldownError(failureReason)
           || String(failureCode || '').trim() === 'phone_recently_used_cooldown';
         const normalizedFailureCode = String(failureCode || '').trim();
@@ -8044,6 +8080,17 @@
           `步骤 9：添加手机号失败后正在更换号码（${formatStep9Reason(failureReason)}，${usedNumberReplacementAttempts}/${maxNumberReplacementAttempts}）。`,
           'warn'
         );
+        if (replacementSmsPoolReuseOptions?.smsPoolReuseCostFilter?.length) {
+          await addLog(
+            `步骤 9：当前 SMSPool 号码价格档为 ${replacementSmsPoolReuseOptions.smsPoolReuseCostFilter[0]}，换号时仅从同价格档复用池取号。`,
+            'info'
+          );
+        } else if (replacementSmsPoolReuseOptions?.skipSmsPoolReuse) {
+          await addLog(
+            '步骤 9：当前 SMSPool 号码不属于 0.14 / 0.00 复用档，换号时直接从新号码池取号。',
+            'info'
+          );
+        }
         if (preserveProviderActivation) {
           await addLog(
             `步骤 9：当前号码因 WhatsApp-only 页面无法接码，保留服务商订单，仅切换本轮号码。`,
@@ -8154,7 +8201,9 @@
                   blockedCountryIds: getBlockedCountryIds(),
                   countryPriceFloorByCountryId: getCountryPriceFloorById(),
                   skipPreferredActivation: preferredActivationExhausted,
+                  ...(replacementSmsPoolReuseOptions || {}),
                 });
+                replacementSmsPoolReuseOptions = null;
                 shouldCancelActivation = true;
                 await persistCurrentActivation(activation);
               }
