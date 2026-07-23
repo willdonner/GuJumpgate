@@ -83,7 +83,7 @@
     const DEFAULT_PHONE_REQUEST_TIMEOUT_MS = 20000;
     const DEFAULT_PHONE_SUBMIT_ATTEMPTS = 3;
     const DEFAULT_PHONE_NUMBER_MAX_USES = 3;
-    const DEFAULT_PHONE_NUMBER_REPLACEMENT_LIMIT = 3;
+    const DEFAULT_PHONE_NUMBER_REPLACEMENT_LIMIT = 0;
     const DEFAULT_PHONE_PRICE_LOOKUP_ATTEMPTS = 3;
     const MAX_PHONE_PRICE_CANDIDATES = 8;
     const DEFAULT_PHONE_ACTIVATION_RETRY_ROUNDS = 3;
@@ -520,10 +520,17 @@
 
     function normalizePhoneReplacementLimit(value) {
       const parsed = Math.floor(Number(value));
-      if (!Number.isFinite(parsed) || parsed <= 0) {
+      if (!Number.isFinite(parsed)) {
         return DEFAULT_PHONE_NUMBER_REPLACEMENT_LIMIT;
       }
+      if (parsed <= 0) {
+        return 0;
+      }
       return Math.max(1, Math.min(100, parsed));
+    }
+
+    function isAutomaticPhoneActivationManagementEnabled() {
+      return false;
     }
 
     function normalizePhoneActivationRetryRounds(value) {
@@ -1000,7 +1007,7 @@
 
     function normalizeSmsPoolReuseCostFilter(value = null) {
       if (value === undefined || value === null || value === '') {
-        return ['0.12', '0.00'];
+        return ['0.14', '0.00'];
       }
       const source = Array.isArray(value)
         ? value
@@ -1013,8 +1020,8 @@
         const numeric = Number(entry);
         const key = Number.isFinite(numeric) && Math.abs(numeric) < 0.000001
           ? '0.00'
-          : (Number.isFinite(numeric) && Math.abs(numeric - 0.12) < 0.000001 ? '0.12' : String(entry || '').trim());
-        if ((key === '0.12' || key === '0.00') && !normalized.includes(key)) {
+          : (Number.isFinite(numeric) && (Math.abs(numeric - 0.12) < 0.000001 || Math.abs(numeric - 0.14) < 0.000001) ? '0.14' : String(entry || '').trim());
+        if ((key === '0.14' || key === '0.00') && !normalized.includes(key)) {
           normalized.push(key);
         }
       });
@@ -2271,7 +2278,7 @@
         return false;
       }
       const selectedBuckets = normalizeSmsPoolReuseCostFilter(state?.smsPoolReuseCostFilter);
-      if (!selectedBuckets.includes('0.12')) {
+      if (!selectedBuckets.includes('0.14')) {
         return false;
       }
       const activationCost = normalizeHeroSmsPrice(
@@ -2280,7 +2287,7 @@
         ?? activation?.cost
         ?? getActivationAcquiredPriceHint(normalizedActivation)
       );
-      return activationCost !== null && Math.abs(activationCost - 0.12) < 0.000001;
+      return activationCost !== null && Math.abs(activationCost - 0.14) < 0.000001;
     }
 
     function forgetActivationAcquiredPriceHint(activation) {
@@ -3394,8 +3401,8 @@
       } else if (hasMinPrice) {
         suggestions.push(`可适当降低最低购买价（当前 ${context.priceRangeText || `${minPrice}~`}）`);
       } else if (!hasMaxPrice) {
-        suggestions.push('先设置价格上限（建议 >= 0.12）');
-      } else if (maxPrice < 0.12) {
+        suggestions.push('先设置价格上限（建议 >= 0.14）');
+      } else if (maxPrice < 0.14) {
         suggestions.push('先提高价格上限（当前偏低）');
       }
 
@@ -5131,6 +5138,13 @@
     }
 
     async function completePhoneActivation(state = {}, activation) {
+      if (!isAutomaticPhoneActivationManagementEnabled()) {
+        const identifier = normalizeActivation(activation)?.phoneNumber
+          || normalizeActivation(activation)?.activationId
+          || '当前接码订单';
+        await addLog(`步骤 9：自动号码管理已关闭，保留接码订单 ${identifier}，不自动标记完成。`, 'info');
+        return;
+      }
       if (shouldSkipTerminalStatusForFreeReuse(state, activation)) {
         const normalizedActivation = normalizeActivation(activation);
         const identifier = normalizedActivation?.phoneNumber || normalizedActivation?.activationId || 'current activation';
@@ -5149,12 +5163,19 @@
     }
 
     async function cancelPhoneActivation(state = {}, activation, options = {}) {
+      if (!isAutomaticPhoneActivationManagementEnabled()) {
+        const identifier = normalizeActivation(activation)?.phoneNumber
+          || normalizeActivation(activation)?.activationId
+          || '当前接码订单';
+        await addLog(`步骤 9：自动号码管理已关闭，保留接码订单 ${identifier}，不自动释放。`, 'info');
+        return;
+      }
       try {
         const normalizedActivation = normalizeActivation(activation);
         if (isProtectedSmsPoolPaidReuseActivation(state, normalizedActivation)) {
           const identifier = normalizedActivation?.phoneNumber || normalizedActivation?.activationId || 'current activation';
           await addLog(
-            `步骤 9：SMSPool 0.12 复用号码 ${identifier} 已受保护，跳过主动释放。`,
+            `步骤 9：SMSPool 0.14 复用号码 ${identifier} 已受保护，跳过主动释放。`,
             'info'
           );
           return;
@@ -5186,17 +5207,26 @@
     }
 
     async function retireFreeReusableActivation(reason = '') {
+      if (!isAutomaticPhoneActivationManagementEnabled()) {
+        await addLog(`步骤 9：自动号码管理已关闭，保留白嫖复用手机号记录。${reason ? ` ${reason}` : ''}`, 'info');
+        return;
+      }
       const suffix = reason ? ` ${reason}` : '';
       await addLog(`步骤 9：已清除白嫖复用手机号记录。${suffix}`, 'warn');
       await clearFreeReusableActivation();
     }
 
     async function discardPhoneActivationFromReuse(reason = '', activation = null, state = {}) {
+      if (!isAutomaticPhoneActivationManagementEnabled()) {
+        const identifier = normalizeActivation(activation)?.phoneNumber || '当前接码订单';
+        await addLog(`步骤 9：自动号码管理已关闭，保留 ${identifier} 的复用记录。${reason || ''}`.trim(), 'info');
+        return;
+      }
       if (isProtectedSmsPoolPaidReuseActivation(state, activation)) {
         const protectedActivation = normalizeActivation(activation);
         const identifier = protectedActivation?.phoneNumber || protectedActivation?.activationId || '当前接码订单';
         await addLog(
-          `步骤 9：SMSPool 0.12 复用号码 ${identifier} 已受保护，跳过从复用记录移除。${reason || ''}`.trim(),
+          `步骤 9：SMSPool 0.14 复用号码 ${identifier} 已受保护，跳过从复用记录移除。${reason || ''}`.trim(),
           'info'
         );
         return;
@@ -5248,12 +5278,19 @@
     }
 
     async function banPhoneActivation(state = {}, activation, options = {}) {
+      if (!isAutomaticPhoneActivationManagementEnabled()) {
+        const identifier = normalizeActivation(activation)?.phoneNumber
+          || normalizeActivation(activation)?.activationId
+          || '当前接码订单';
+        await addLog(`步骤 9：自动号码管理已关闭，保留接码订单 ${identifier}，不自动封禁或归档。`, 'info');
+        return;
+      }
       try {
         const normalizedActivation = normalizeActivation(activation);
         if (isProtectedSmsPoolPaidReuseActivation(state, normalizedActivation)) {
           const identifier = normalizedActivation?.phoneNumber || normalizedActivation?.activationId || 'current activation';
           await addLog(
-            `步骤 9：SMSPool 0.12 复用号码 ${identifier} 已受保护，跳过主动封禁/释放。`,
+            `步骤 9：SMSPool 0.14 复用号码 ${identifier} 已受保护，跳过主动封禁/释放。`,
             'info'
           );
           return;
@@ -6176,7 +6213,7 @@
       const state = options?.state || await getState();
       if (isProtectedSmsPoolPaidReuseActivation(state, normalized)) {
         await addLog(
-          `步骤 9：SMSPool 0.12 复用号码 ${normalized.phoneNumber || normalized.activationId} 已受保护，跳过从复用池移除。`,
+          `步骤 9：SMSPool 0.14 复用号码 ${normalized.phoneNumber || normalized.activationId} 已受保护，跳过从复用池移除。`,
           'info'
         );
         return readReusableActivationPoolFromState(state);
@@ -8000,7 +8037,7 @@
           || isPhoneVerificationTooManyRequestsError(failureReason);
         await markPreferredActivationExhausted(failureCode || failureReason);
         usedNumberReplacementAttempts += 1;
-        if (usedNumberReplacementAttempts > maxNumberReplacementAttempts) {
+        if (maxNumberReplacementAttempts > 0 && usedNumberReplacementAttempts > maxNumberReplacementAttempts) {
           throw buildPhoneReplacementLimitError(maxNumberReplacementAttempts, failureCode || 'add_phone_rejected');
         }
         await addLog(
@@ -8121,7 +8158,7 @@
               addPhoneReentryWithSameActivation += 1;
               if (addPhoneReentryWithSameActivation > 1) {
                 usedNumberReplacementAttempts += 1;
-                if (usedNumberReplacementAttempts > maxNumberReplacementAttempts) {
+                if (maxNumberReplacementAttempts > 0 && usedNumberReplacementAttempts > maxNumberReplacementAttempts) {
                   throw buildPhoneReplacementLimitError(maxNumberReplacementAttempts, 'returned_to_add_phone_loop');
                 }
                 await addLog(
@@ -8197,7 +8234,7 @@
               const addPhoneRejectText = String(submitResult.errorText || submitResult.url || 'unknown error');
               if (isPhoneNumberMaxUsageExceededError(addPhoneRejectText)) {
                 usedNumberReplacementAttempts += 1;
-                if (usedNumberReplacementAttempts > maxNumberReplacementAttempts) {
+                if (maxNumberReplacementAttempts > 0 && usedNumberReplacementAttempts > maxNumberReplacementAttempts) {
                   throw buildPhoneReplacementLimitError(maxNumberReplacementAttempts, 'phone_max_usage_exceeded');
                 }
                 await addLog(
@@ -8246,7 +8283,7 @@
               }
               if (isPhoneNumberUsedError(addPhoneRejectText)) {
                 usedNumberReplacementAttempts += 1;
-                if (usedNumberReplacementAttempts > maxNumberReplacementAttempts) {
+                if (maxNumberReplacementAttempts > 0 && usedNumberReplacementAttempts > maxNumberReplacementAttempts) {
                   throw new Error(
                     `步骤 9：更换 ${maxNumberReplacementAttempts} 次号码后手机号验证仍未成功。最后原因：${formatStep9Reason('phone_number_used')}。`
                   );
@@ -8637,7 +8674,7 @@
           await markPreferredActivationExhausted(replaceReason || 'replace_number');
 
           usedNumberReplacementAttempts += 1;
-          if (usedNumberReplacementAttempts > maxNumberReplacementAttempts) {
+          if (maxNumberReplacementAttempts > 0 && usedNumberReplacementAttempts > maxNumberReplacementAttempts) {
             throw buildPhoneReplacementLimitError(maxNumberReplacementAttempts, replaceReason || 'unknown');
           }
 
@@ -8654,6 +8691,12 @@
             await cancelPhoneActivation(state, activation, { forceTerminalStatus: true });
           } else if (shouldReleaseActivationOnReplacement(activation, shouldCancelActivation)) {
             await cancelPhoneActivation(state, activation, { forceTerminalStatus: true });
+          }
+          if (/^sms_timeout_after_/i.test(String(replaceReason || ''))) {
+            await addPhoneNumberToCurrentAttemptExclusions(
+              activation?.phoneNumber,
+              '60 秒内未收到短信，保留订单并在本轮改取新号码。'
+            );
           }
           if (!shouldPreserveRecentlyUsedActivation && isFreeAutoReuseActivation(activation)) {
             await retireFreeReusableActivation(

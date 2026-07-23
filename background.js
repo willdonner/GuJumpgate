@@ -649,7 +649,7 @@ const VERIFICATION_RESEND_COUNT_MAX = 20;
 const DEFAULT_VERIFICATION_RESEND_COUNT = 0;
 const PHONE_REPLACEMENT_LIMIT_MIN = 1;
 const PHONE_REPLACEMENT_LIMIT_MAX = 100;
-const DEFAULT_PHONE_VERIFICATION_REPLACEMENT_LIMIT = 3;
+const DEFAULT_PHONE_VERIFICATION_REPLACEMENT_LIMIT = 0;
 const WHATSAPP_PHONE_VERIFICATION_RESTART_LIMIT_MIN = 1;
 const WHATSAPP_PHONE_VERIFICATION_RESTART_LIMIT_MAX = 20;
 const DEFAULT_WHATSAPP_PHONE_VERIFICATION_RESTART_MAX_ATTEMPTS = 3;
@@ -1179,9 +1179,9 @@ const PERSISTED_SETTING_DEFAULTS = {
   step6CookieCleanupEnabled: false,
   phoneVerificationEnabled: false,
   phoneSignupReloginAfterBindEmailEnabled: false,
-  phoneAutoReleaseOnStopEnabled: true,
+  phoneAutoReleaseOnStopEnabled: false,
   phoneSmsReuseEnabled: DEFAULT_HERO_SMS_REUSE_ENABLED,
-  smsPoolReuseCostFilter: ['0.12', '0.00'],
+  smsPoolReuseCostFilter: ['0.14', '0.00'],
   freePhoneReuseEnabled: true,
   freePhoneReuseAutoEnabled: true,
   signupMethod: DEFAULT_SIGNUP_METHOD,
@@ -1861,10 +1861,13 @@ function normalizePhoneVerificationReplacementLimit(value, fallback = DEFAULT_PH
   const rawValue = String(value ?? '').trim();
   const numeric = Number(rawValue);
   if (!rawValue || !Number.isFinite(numeric)) {
-    return Math.min(
-      PHONE_REPLACEMENT_LIMIT_MAX,
-      Math.max(PHONE_REPLACEMENT_LIMIT_MIN, Math.floor(Number(fallback) || DEFAULT_PHONE_VERIFICATION_REPLACEMENT_LIMIT))
-    );
+    const fallbackValue = Math.floor(Number(fallback));
+    return Number.isFinite(fallbackValue) && fallbackValue >= 0
+      ? Math.min(PHONE_REPLACEMENT_LIMIT_MAX, fallbackValue)
+      : DEFAULT_PHONE_VERIFICATION_REPLACEMENT_LIMIT;
+  }
+  if (numeric <= 0) {
+    return 0;
   }
   return Math.min(
     PHONE_REPLACEMENT_LIMIT_MAX,
@@ -3993,6 +3996,7 @@ function normalizePersistentSettingValue(key, value) {
     case 'phoneSignupReloginAfterBindEmailEnabled':
     case 'whatsappPhoneVerificationRestartEnabled':
     case 'phoneAutoReleaseOnStopEnabled':
+      return false;
     case 'phoneSmsReuseEnabled':
     case 'freePhoneReuseEnabled':
     case 'freePhoneReuseAutoEnabled':
@@ -4011,7 +4015,7 @@ function normalizePersistentSettingValue(key, value) {
     case 'verificationResendCount':
       return normalizeVerificationResendCount(value, DEFAULT_VERIFICATION_RESEND_COUNT);
     case 'phoneVerificationReplacementLimit':
-      return normalizePhoneVerificationReplacementLimit(value, DEFAULT_PHONE_VERIFICATION_REPLACEMENT_LIMIT);
+      return 0;
     case 'whatsappPhoneVerificationRestartMaxAttempts':
       return normalizeWhatsAppPhoneVerificationRestartMaxAttempts(
         value,
@@ -4303,13 +4307,18 @@ function normalizePersistentSettingValue(key, value) {
       return String(value || DEFAULT_SMSPOOL_COUNTRY_LABEL).trim() || DEFAULT_SMSPOOL_COUNTRY_LABEL;
     case 'smsPoolCountryFallback':
       return normalizeHeroSmsCountryFallback(value);
+    case 'smsPoolMaxPrice': {
+      const normalized = normalizeHeroSmsMaxPrice(value);
+      return Number.isFinite(Number(normalized)) && Math.abs(Number(normalized) - 0.12) < 0.000001
+        ? '0.14'
+        : normalized;
+    }
     case 'smsPoolMinPrice':
-    case 'smsPoolMaxPrice':
     case 'smsPoolPreferredPrice':
       return normalizeHeroSmsMaxPrice(value);
     case 'smsPoolReuseCostFilter': {
       if (value === undefined || value === null || value === '') {
-        return ['0.12', '0.00'];
+        return ['0.14', '0.00'];
       }
       const source = Array.isArray(value)
         ? value
@@ -4322,8 +4331,8 @@ function normalizePersistentSettingValue(key, value) {
         const numeric = Number(entry);
         const keyValue = Number.isFinite(numeric) && Math.abs(numeric) < 0.000001
           ? '0.00'
-          : (Number.isFinite(numeric) && Math.abs(numeric - 0.12) < 0.000001 ? '0.12' : String(entry || '').trim());
-        if ((keyValue === '0.12' || keyValue === '0.00') && !normalized.includes(keyValue)) {
+          : (Number.isFinite(numeric) && (Math.abs(numeric - 0.12) < 0.000001 || Math.abs(numeric - 0.14) < 0.000001) ? '0.14' : String(entry || '').trim());
+        if ((keyValue === '0.14' || keyValue === '0.00') && !normalized.includes(keyValue)) {
           normalized.push(keyValue);
         }
       });
