@@ -616,6 +616,8 @@
         payload.sms_code,
         payload.otp,
         payload.verification_code,
+        payload.sms,
+        payload.sms_text,
         payload.message,
         payload.text,
       ];
@@ -667,6 +669,8 @@
         payload.sms_code,
         payload.otp,
         payload.verification_code,
+        payload.sms,
+        payload.sms_text,
         payload.message,
         payload.text,
       ];
