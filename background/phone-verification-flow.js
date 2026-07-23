@@ -8070,6 +8070,10 @@
 
       const rotateActivationAfterAddPhoneFailure = async (failureReason, failureCode, submitState = {}) => {
         replacementSmsPoolReuseOptions = getSmsPoolReplacementReuseOptions(activation);
+        await addPhoneNumberToCurrentAttemptExclusions(
+          activation?.phoneNumber,
+          `OpenAI 拒绝当前号码：${failureReason || failureCode || 'unknown error'}`
+        );
         const preserveActivation = isPhoneNumberRecentlyUsedCooldownError(failureReason)
           || String(failureCode || '').trim() === 'phone_recently_used_cooldown';
         const normalizedFailureCode = String(failureCode || '').trim();
@@ -8105,12 +8109,7 @@
             `步骤 9：当前号码因 WhatsApp-only 页面无法接码，保留服务商订单，仅切换本轮号码。`,
             'info'
           );
-        } else if (preserveActivation) {
-          await addPhoneNumberToCurrentAttemptExclusions(
-            activation?.phoneNumber,
-            `OpenAI 提示：${failureReason}`
-          );
-        } else if (forceReleaseActivation) {
+        } else if (!preserveActivation && forceReleaseActivation) {
           await discardPhoneActivationFromReuse(
             `OpenAI 拒绝当前号码，释放接码订单并换号。${failureReason || ''}`.trim(),
             activation,
