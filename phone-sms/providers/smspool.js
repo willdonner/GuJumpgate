@@ -313,6 +313,61 @@
     return !/cancel|expired|timeout|closed|invalid|banned|refund/.test(statusText);
   }
 
+  function isSmsPoolOrderWaitingForCode(record = {}) {
+    const statusText = normalizeServiceText(record.status || record.statusText || record.state);
+    return /pending|waiting|wait code|wait sms|active|processing|prepare|ready|retry|resend/.test(statusText);
+  }
+
+  function findMatchingSmsPoolOrder(payload, activation = {}) {
+    const normalizedActivation = normalizeActivation(activation, activation);
+    if (!normalizedActivation) {
+      return null;
+    }
+    return collectSmsPoolHistoryOrders(payload).find((record) => {
+      const orderId = String(record?.order_code || record?.orderid || record?.order_id || record?.id || '').trim();
+      const phoneNumber = String(record?.phonenumber || record?.phoneNumber || record?.number || record?.phone || '').trim();
+      return orderId === normalizedActivation.activationId
+        || phoneNumbersMatch(phoneNumber, normalizedActivation.phoneNumber);
+    }) || null;
+  }
+
+  async function confirmSmsPoolActivationWaiting(state = {}, activation, deps = {}) {
+    const normalizedActivation = normalizeActivation(activation, activation);
+    if (!normalizedActivation) {
+      throw new Error('SMSPool 缺少需要确认等待状态的接码订单。');
+    }
+    const config = resolveConfig(state, deps);
+    const maxRounds = normalizeActivationRetryRounds(
+      state?.heroSmsActivationRetryRounds,
+      DEFAULT_ACTIVATION_RETRY_ROUNDS
+    );
+    const retryDelayMs = normalizeActivationRetryDelayMs(
+      state?.heroSmsActivationRetryDelayMs,
+      DEFAULT_ACTIVATION_RETRY_DELAY_MS
+    );
+    let lastStatus = '';
+
+    for (let round = 1; round <= maxRounds; round += 1) {
+      const payload = await postForm(config, '/request/active', {
+        key: config.apiKey,
+      }, 'SMSPool confirm waiting order');
+      const matchedOrder = findMatchingSmsPoolOrder(payload, normalizedActivation);
+      lastStatus = matchedOrder
+        ? (normalizeServiceText(matchedOrder.status || matchedOrder.statusText || matchedOrder.state) || 'unknown')
+        : 'not found in active orders';
+      if (matchedOrder && isSmsPoolOrderWaitingForCode(matchedOrder)) {
+        return matchedOrder;
+      }
+      if (round < maxRounds) {
+        await deps.sleepWithStop?.(retryDelayMs);
+      }
+    }
+
+    throw new Error(
+      `SMSPool 订单 ${normalizedActivation.activationId} 未进入等待验证码状态（最后状态：${lastStatus}）。`
+    );
+  }
+
   function normalizeSmsPoolTimestamp(record = {}) {
     const raw = record.timestamp ?? record.created_at ?? record.createdAt ?? record.date ?? record.time;
     if (raw === undefined || raw === null || raw === '') {
@@ -893,6 +948,7 @@
 
     const activeRecords = collectSmsPoolHistoryOrders(payload);
     const excludedPhoneNumbers = normalizeExcludedPhoneNumbers(options?.excludedPhoneNumbers);
+    const allowedCostBuckets = normalizeSmsPoolReuseCostFilter(state.smsPoolReuseCostFilter);
     const seen = new Set();
     const candidates = activeRecords
       .map((record, index) => {
@@ -913,6 +969,7 @@
         return isReusableSmsPoolActiveOrder(record)
           && isConfiguredSmsPoolActiveServiceOrder(record, state)
           && isConfiguredSmsPoolCountryOrder(record, state)
+          && allowedCostBuckets.includes(getSmsPoolReuseCostBucket(record))
           && !excludedPhoneNumbers.some((entry) => phoneNumbersMatch(entry, activation.phoneNumber));
       })
       .sort((left, right) => {
@@ -1211,6 +1268,7 @@
     }, 'SMSPool activate sms');
     if (isSuccessPayload(activatePayload)) {
       const existingCodes = await captureExistingCodesForActivation(config, normalizedActivation);
+      await confirmSmsPoolActivationWaiting(state, normalizedActivation, deps);
       return {
         ...normalizedActivation,
         smsPoolResendPreparedAt: Date.now(),
@@ -1225,6 +1283,7 @@
       throw new Error(`SMSPool 复用手机号失败：${describePayload(reactivatePayload) || '未知错误'}`);
     }
     const existingCodes = await captureExistingCodesForActivation(config, normalizedActivation);
+    await confirmSmsPoolActivationWaiting(state, normalizedActivation, deps);
     return {
       ...normalizedActivation,
       smsPoolResendPreparedAt: Date.now(),
@@ -1297,6 +1356,7 @@
       if (!isSuccessPayload(resendPayload)) {
         throw new Error(`SMSPool 重发请求失败：${describePayload(resendPayload) || '未知错误'}`);
       }
+      await confirmSmsPoolActivationWaiting(state, normalizedActivation, deps);
       return {
         message: describePayload(resendPayload),
         activation: {
@@ -1313,6 +1373,7 @@
     if (!isSuccessPayload(activatePayload)) {
       throw new Error(`SMSPool 刷新收码状态失败：${describePayload(activatePayload) || describePayload(probePayload) || '未知错误'}`);
     }
+    await confirmSmsPoolActivationWaiting(state, normalizedActivation, deps);
     return {
       message: describePayload(activatePayload),
       activation: {
