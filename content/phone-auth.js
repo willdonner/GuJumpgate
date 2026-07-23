@@ -397,6 +397,14 @@
       return Boolean(text && isSmsChannelText(text) && isWhatsAppChannelText(text));
     }
 
+    function isWhatsAppOnlyDeliveryFailureText(value) {
+      const text = normalizeInlineText(value);
+      return Boolean(
+        /whats\s*app/i.test(text)
+        && /(?:could(?:\s+not|n't)|unable|failed|cannot|can't|无法|未能)[\s\S]{0,120}(?:send|发送)[\s\S]{0,120}(?:sms|text\s*message|短信)[\s\S]{0,120}(?:switch(?:ed)?|改为|切换)[\s\S]{0,80}whats\s*app/i.test(text)
+      );
+    }
+
     function getAddPhoneChannelInput() {
       const form = getAddPhoneForm();
       if (!form) {
@@ -692,9 +700,12 @@
       const candidates = collectAddPhoneDeliveryTextCandidates();
       const combinedText = normalizeInlineText(candidates.join(' '));
       const pageLevelWhatsAppText = candidates.find((text) => (
-        /whats\s*app/i.test(text)
-        && /(?:verification\s+code|one[-\s]*time\s+code|验证码|一次性验证码)/i.test(text)
-        && !isMixedSmsWhatsAppChannelSelectorText(text)
+        isWhatsAppOnlyDeliveryFailureText(text)
+        || (
+          /whats\s*app/i.test(text)
+          && /(?:verification\s+code|one[-\s]*time\s+code|验证码|一次性验证码)/i.test(text)
+          && !isMixedSmsWhatsAppChannelSelectorText(text)
+        )
       )) || '';
       const smsDeliveryText = candidates.find((text) => (
         /(?:sms|text\s*message|短信)/i.test(text)

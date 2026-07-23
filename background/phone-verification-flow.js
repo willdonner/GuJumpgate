@@ -8030,11 +8030,11 @@
         const normalizedFailureCode = String(failureCode || '').trim();
         const forceReleaseActivation = normalizedFailureCode === 'phone_max_usage_exceeded'
           || normalizedFailureCode === 'phone_verification_too_many_requests'
-          || normalizedFailureCode === 'whatsapp_add_phone_channel'
-          || normalizedFailureCode === 'whatsapp_verification_channel'
-          || normalizedFailureCode === 'whatsapp_resend_channel'
           || isPhoneNumberMaxUsageExceededError(failureReason)
           || isPhoneVerificationTooManyRequestsError(failureReason);
+        const preserveProviderActivation = normalizedFailureCode === 'whatsapp_add_phone_channel'
+          || normalizedFailureCode === 'whatsapp_verification_channel'
+          || normalizedFailureCode === 'whatsapp_resend_channel';
         await markPreferredActivationExhausted(failureCode || failureReason);
         usedNumberReplacementAttempts += 1;
         if (maxNumberReplacementAttempts > 0 && usedNumberReplacementAttempts > maxNumberReplacementAttempts) {
@@ -8044,7 +8044,12 @@
           `步骤 9：添加手机号失败后正在更换号码（${formatStep9Reason(failureReason)}，${usedNumberReplacementAttempts}/${maxNumberReplacementAttempts}）。`,
           'warn'
         );
-        if (preserveActivation) {
+        if (preserveProviderActivation) {
+          await addLog(
+            `步骤 9：当前号码因 WhatsApp-only 页面无法接码，保留服务商订单，仅切换本轮号码。`,
+            'info'
+          );
+        } else if (preserveActivation) {
           await addPhoneNumberToCurrentAttemptExclusions(
             activation?.phoneNumber,
             `OpenAI 提示：${failureReason}`
@@ -8113,7 +8118,7 @@
               const visibleStep = normalizeLogStep(activePhoneVerificationLogStep) || 9;
               const deliveryLabel = pageState.addPhoneDeliveryText || 'WhatsApp';
               await addLog(
-                `步骤 ${visibleStep}：添加手机号页切换到 WhatsApp（${deliveryLabel}），当前接码平台无法读取，释放当前号码并换号。`,
+                `步骤 ${visibleStep}：添加手机号页切换到 WhatsApp（${deliveryLabel}），当前接码平台无法读取，保留当前订单并换号。`,
                 'warn'
               );
               await rotateActivationAfterAddPhoneFailure(
@@ -8419,7 +8424,7 @@
             const visibleStep = normalizeLogStep(activePhoneVerificationLogStep) || 9;
             const deliveryLabel = pageState.phoneVerificationDeliveryText || pageState.displayedPhone || 'WhatsApp';
             await addLog(
-              `步骤 ${visibleStep}：手机验证码页切换到 WhatsApp（${deliveryLabel}），当前接码平台无法读取，释放当前号码并换号。`,
+              `步骤 ${visibleStep}：手机验证码页切换到 WhatsApp（${deliveryLabel}），当前接码平台无法读取，保留当前订单并换号。`,
               'warn'
             );
             await rotateActivationAfterAddPhoneFailure(
