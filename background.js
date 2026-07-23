@@ -3992,7 +3992,9 @@ function normalizePersistentSettingValue(key, value) {
     case 'operationDelayEnabled':
       return typeof value === 'boolean' ? value : true;
     case 'step6CookieCleanupEnabled':
+      return false;
     case 'phoneVerificationEnabled':
+      return Boolean(value);
     case 'phoneSignupReloginAfterBindEmailEnabled':
     case 'whatsappPhoneVerificationRestartEnabled':
     case 'phoneAutoReleaseOnStopEnabled':
