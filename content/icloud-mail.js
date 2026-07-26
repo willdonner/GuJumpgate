@@ -662,6 +662,15 @@ if (shouldHandlePollEmailInCurrentFrame) {
   }
 
   async function refreshInbox() {
+    const directRefreshButton = document.querySelector(
+      'ui-button[title="Refresh"][role="button"][aria-disabled="false"], ui-button[aria-label="Refresh"][role="button"][aria-disabled="false"]'
+    );
+    if (directRefreshButton && isVisibleElement(directRefreshButton)) {
+      simulateClick(directRefreshButton);
+      await sleep(1200);
+      return true;
+    }
+
     const refreshPatterns = [/刷新/i, /refresh/i, /重新载入/i];
     const candidates = document.querySelectorAll('button, [role="button"], a');
     for (const node of candidates) {
@@ -669,8 +678,8 @@ if (shouldHandlePollEmailInCurrentFrame) {
       const label = normalizeText(node.getAttribute('aria-label') || node.getAttribute('title') || '');
       if (refreshPatterns.some((pattern) => pattern.test(text) || pattern.test(label))) {
         simulateClick(node);
-        await sleep(1000);
-        return;
+        await sleep(1200);
+        return true;
       }
     }
 
@@ -680,10 +689,12 @@ if (shouldHandlePollEmailInCurrentFrame) {
       const label = normalizeText(node.getAttribute('aria-label') || node.getAttribute('title') || '');
       if (inboxPatterns.some((pattern) => pattern.test(text) || pattern.test(label))) {
         simulateClick(node);
-        await sleep(1000);
-        return;
+        await sleep(1200);
+        return false;
       }
     }
+
+    return false;
   }
 
   function normalizePollSessionKey(payload = {}) {
@@ -771,10 +782,8 @@ if (shouldHandlePollEmailInCurrentFrame) {
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       log(`步骤 ${step}：正在轮询 iCloud 邮箱，第 ${attempt}/${maxAttempts} 次`);
 
-      if (attempt > 1) {
-        await refreshInbox();
-        await sleep(1200);
-      }
+      await refreshInbox();
+      await sleep(1200);
 
       const items = collectThreadItems();
       const useFallback = (fallbackCarry + attempt) > FALLBACK_AFTER;
